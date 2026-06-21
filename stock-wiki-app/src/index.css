@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f9fafb;
+  --color-bg-tertiary: #f3f4f6;
+  --color-text: #1f2937;
+  --color-text-secondary: #6b7280;
+  --color-text-muted: #9ca3af;
+  --color-border: #e5e7eb;
+  --color-accent: #3b82f6;
+  --color-accent-hover: #2563eb;
+  --color-accent-bg: rgba(59, 130, 246, 0.1);
+  --color-danger: #ef4444;
+  --color-success: #22c55e;
+  --color-sidebar: #f8fafc;
+  --color-editor-bg: #ffffff;
+  --color-preview-bg: #fcfcfc;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-bg: #1e1e2e;
+    --color-bg-secondary: #252536;
+    --color-bg-tertiary: #2d2d44;
+    --color-text: #e2e8f0;
+    --color-text-secondary: #a0aec0;
+    --color-text-muted: #64748b;
+    --color-border: #3d3d5c;
+    --color-accent: #60a5fa;
+    --color-accent-hover: #93bbfd;
+    --color-accent-bg: rgba(96, 165, 250, 0.15);
+    --color-danger: #f87171;
+    --color-success: #4ade80;
+    --color-sidebar: #1a1a2e;
+    --color-editor-bg: #1e1e2e;
+    --color-preview-bg: #1a1a2e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}

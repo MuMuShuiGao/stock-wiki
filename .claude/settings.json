@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git fetch *)",
+      "Bash(pnpm create *)",
+      "Bash(npm --version)",
+      "Bash(cargo --version)",
+      "Bash(npm install *)",
+      "Bash(npm create *)",
+      "Bash(npx tauri *)",
+      "Bash(cargo check *)",
+      "Bash(rustup toolchain *)",
+      "Bash(rustup show *)",
+      "Bash(rustup target *)",
+      "Bash(rustc --version)",
+      "Bash(where link.exe)",
+      "Bash(dir \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\")",
+      "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2022\")",
+      "Bash(rustup install *)",
+      "Bash(rustup run *)",
+      "Bash(rustup default *)",
+      "Bash(cargo clean *)",
+      "Bash(npx tsc *)",
+      "Bash(npx vite *)",
+      "Bash(cargo build *)",
+      "Bash(dir \"C:\\\\Program Files\\\\Microsoft Visual Studio\")",
+      "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\")",
+      "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\Windows Kits\")",
+      "Bash(winget list *)",
+      "Bash(mkdir -p \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\\\\src-tauri\\\\.cargo\" 2>&1)",
+      "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\Windows Kits\\\\10\\\\bin\")",
+      "Bash(dir \"C:\\\\Users\\\\23026\\\\scoop\")",
+      "Bash(where cl.exe)",
+      "Bash(echo \"exit: $?\")"
+    ],
+    "additionalDirectories": [
+      "d:\\Code\\stock-wiki\\stock-wiki-app\\src-tauri"
+    ]
+  }
+}
