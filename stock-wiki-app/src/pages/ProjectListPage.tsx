@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/appStore";
 
 export default function ProjectListPage() {
@@ -59,19 +59,11 @@ export default function ProjectListPage() {
 
   return (
     <div className="flex flex-col w-full h-full max-w-2xl mx-auto gap-6 p-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Projects</h1>
-          <p className="text-xs text-[var(--color-text-muted)] mt-1 truncate max-w-md">
-            {workspace}
-          </p>
-        </div>
-        <Link
-          to="/settings"
-          className="text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-accent)]"
-        >
-          Settings
-        </Link>
+      <div>
+        <h1 className="text-2xl font-bold">Projects</h1>
+        <p className="text-xs text-[var(--color-text-muted)] mt-1 truncate max-w-md">
+          {workspace}
+        </p>
       </div>
 
       {/* Create new project */}

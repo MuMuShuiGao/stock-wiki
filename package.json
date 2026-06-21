@@ -1,6 +1,0 @@
-{
-  "scripts": {
-    "dev": "cd stock-wiki-app && npx tauri dev",
-    "build": "cd stock-wiki-app && npx tauri build"
-  }
-}

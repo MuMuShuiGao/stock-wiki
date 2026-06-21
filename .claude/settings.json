@@ -33,7 +33,22 @@
       "Bash(dir \"C:\\\\Program Files \\(x86\\)\\\\Windows Kits\\\\10\\\\bin\")",
       "Bash(dir \"C:\\\\Users\\\\23026\\\\scoop\")",
       "Bash(where cl.exe)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(pnpm add *)",
+      "Bash(cat package.json)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(pnpm tauri *)",
+      "Bash(netstat -ano)",
+      "Bash(awk '{print $5}')",
+      "Bash(taskkill //F //PID 10548)",
+      "Bash(python -c ' *)",
+      "Bash(tasklist /FI \"PID eq 18324\")",
+      "Bash(ps -p 18324 -o comm=)",
+      "Bash(taskkill //F //PID 18324)",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(curl -s -o NUL -w \"%{http_code}\" http://localhost:5173/src/main.tsx)",
+      "Bash(curl -s http://localhost:5173/src/main.tsx)",
+      "Bash(curl -s http://localhost:5173/src/index.css)"
     ],
     "additionalDirectories": [
       "d:\\Code\\stock-wiki\\stock-wiki-app\\src-tauri"
