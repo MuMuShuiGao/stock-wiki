@@ -61,7 +61,7 @@ export function detectProvider(baseUrl: string | null): LlmProvider {
 }
 
 /** 检查 provider 是否原生支持 response_format 参数 */
-export function supportsResponseFormat(provider: LlmProvider): boolean {
+function supportsResponseFormat(provider: LlmProvider): boolean {
   return PROVIDER_CAPABILITIES[provider]?.supportsResponseFormat ?? false;
 }
 

@@ -698,8 +698,8 @@ const BODY_FORMAT_BLOCK = `## 正文格式规范
 - 章节标题（##）上下各空一行，三级标题（###）上方空一行、下方不空行
 - 段落之间空一行，段落内部不空行、不换行（一段写成连续文字）
 - 不得出现连续两行以上的空行
-- 列表统一用 \`- \` 前缀，不得用 \`* \` 或 \`+ \`
-- 行首不得有空格或缩进（Markdown 正文顶格写）
+- **禁止使用任何列表前缀**（\`- \`、\`* \`、\`+ \`、\`1. \` 等）。所有并列陈述必须写成独立段落，用 **加粗标题**：内容的格式承接上文
+- 行首不得有空格或缩进（Markdown 正文顶格写），每行第一个字符必须从第 1 列开始
 - 正文中如引用 wikilink，格式为 \`[[type/title]]\`，不带引号`;
 
 // ── Stage 3 / Stage 4 共享：批量写入 ───────────────────────────────
@@ -952,9 +952,9 @@ export async function writeLogMd(
 /** 从 wiki 页面内容中提取 frontmatter 的 summary 字段（---json 格式） */
 export function extractSummaryFromFrontmatter(content: string): string {
   if (content.startsWith("---json")) {
-    const endIdx = content.indexOf("\n---", 6);
+    const endIdx = content.indexOf("\n---", 7);
     if (endIdx === -1) return "";
-    const jsonStr = content.substring(6, endIdx).trim();
+    const jsonStr = content.substring(7, endIdx).trim();
     try {
       const data = JSON.parse(jsonStr);
       return typeof data.summary === "string" ? data.summary : "";
