@@ -1,5 +1,6 @@
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -357,18 +358,6 @@ fn delete_project(app: tauri::AppHandle, name: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn rename_project(app: tauri::AppHandle, old_name: String, new_name: String) -> Result<(), String> {
-    let ws_path = get_workspace_path(&app)?;
-    info!("重命名项目: {} -> {}", old_name, new_name);
-    let old_path = sanitize_path(&ws_path, &[&old_name])?;
-    let new_path = sanitize_path(&ws_path, &[&new_name])?;
-
-    fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
-    info!("项目重命名成功");
-    Ok(())
-}
-
 // ── File / directory commands ───────────────────────────────────
 
 #[tauri::command]
@@ -457,37 +446,6 @@ fn delete_file(file_path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn rename_file(file_path: String, new_name: String) -> Result<String, String> {
-    let path = Path::new(&file_path);
-    let parent = path.parent().ok_or("Invalid path")?;
-    let new_path = parent.join(&new_name);
-    info!("重命名: {} -> {}", file_path, new_path.display());
-
-    fs::rename(&path, &new_path).map_err(|e| {
-        error!("重命名失败: {}", e);
-        e.to_string()
-    })?;
-
-    Ok(new_path.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-fn move_file(source: String, dest_dir: String) -> Result<String, String> {
-    let src = Path::new(&source);
-    let dest = Path::new(&dest_dir);
-    let name = src.file_name().ok_or("Invalid source path")?;
-    let dest_path = dest.join(name);
-    info!("移动: {} -> {}", source, dest_path.display());
-
-    fs::rename(&src, &dest_path).map_err(|e| {
-        error!("移动失败: {}", e);
-        e.to_string()
-    })?;
-
-    Ok(dest_path.to_string_lossy().to_string())
-}
-
 // ── Wiki commands ───────────────────────────────────────────────
 
 #[tauri::command]
@@ -512,6 +470,72 @@ fn read_wiki(file_path: String) -> Result<String, String> {
         error!("读取 Wiki 失败: {} - {}", file_path, e);
         e.to_string()
     })
+}
+
+// ── Frontmatter 规范化 ────────────────────────────────────────────
+
+/// 字段规范顺序（schema 定义 + 常见可选字段）
+const FRONTMATTER_ORDER: &[&str] = &[
+    "schema_version", "title", "type", "summary",
+    "created", "updated", "last_reviewed",
+    "code", "industry", "concepts",
+    "parent", "catalysts",
+    "aliases", "tags", "related", "sources",
+];
+
+/// 按规范顺序重新序列化 JSON 对象，返回 pretty-printed JSON 字符串。
+fn serialize_ordered_json(obj: &serde_json::Map<String, serde_json::Value>) -> Result<String, String> {
+    let mut ordered = serde_json::Map::new();
+    let mut handled = HashSet::new();
+
+    for &key in FRONTMATTER_ORDER {
+        if let Some(value) = obj.get(key) {
+            ordered.insert(key.to_string(), value.clone());
+            handled.insert(key.to_string());
+        }
+    }
+
+    // 未在规范顺序中的字段追加到末尾
+    for (key, value) in obj {
+        if !handled.contains(key) {
+            ordered.insert(key.clone(), value.clone());
+        }
+    }
+
+    serde_json::to_string_pretty(&serde_json::Value::Object(ordered))
+        .map_err(|e| e.to_string())
+}
+
+/// 规范化 Wiki 页面的 frontmatter（---json 格式）。
+/// 解析 JSON → 按规范顺序重排 → 输出。解析失败直接报错。
+fn normalize_frontmatter(content: &str, wiki_type: &str, title: &str) -> Result<String, String> {
+    let content = content.trim_start();
+
+    let after_open = content.strip_prefix("---json")
+        .ok_or_else(|| format!("[{} / {}] 缺少 frontmatter：内容未以 '---json' 开头", wiki_type, title))?;
+
+    let close_idx = after_open.find("\n---")
+        .ok_or_else(|| format!("[{} / {}] JSON frontmatter 格式错误：找不到结束定界符 '\\n---'", wiki_type, title))?;
+
+    let json_str = after_open[..close_idx].trim();
+    let body = after_open[close_idx + "\n---".len()..]
+        .trim_start_matches('\n')
+        .trim_start();
+
+    if json_str.is_empty() {
+        return Err(format!("[{} / {}] JSON frontmatter 为空", wiki_type, title));
+    }
+
+    let value: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| format!("[{} / {}] JSON frontmatter 解析失败: {}", wiki_type, title, e))?;
+
+    let mapping = match value {
+        serde_json::Value::Object(m) => m,
+        _ => return Err(format!("[{} / {}] JSON frontmatter 格式错误：顶层必须是对象", wiki_type, title)),
+    };
+
+    let clean = serialize_ordered_json(&mapping)?;
+    Ok(format!("---json\n{}\n---\n\n{}", clean, body))
 }
 
 #[tauri::command]
@@ -553,8 +577,11 @@ fn write_wiki(
     let safe_filename = format!("{}.md", &title);
     let file_path = wiki_dir.join(&safe_filename);
 
-    info!("写入 Wiki: {}/{}", wiki_type, title);
-    fs::write(&file_path, &content).map_err(|e| {
+    info!("写入 Wiki: {}/{} — 规范化 frontmatter...", wiki_type, title);
+
+    let normalized = normalize_frontmatter(&content, &wiki_type, &title)?;
+
+    fs::write(&file_path, &normalized).map_err(|e| {
         error!("写入 Wiki 失败: {}", e);
         e.to_string()
     })?;
@@ -776,7 +803,6 @@ pub fn run() {
             list_projects,
             create_project,
             delete_project,
-            rename_project,
             // Files
             list_directory,
             create_file,
@@ -784,8 +810,6 @@ pub fn run() {
             read_file,
             write_file,
             delete_file,
-            rename_file,
-            move_file,
             import_file,
             // Wiki
             check_wiki_exists,

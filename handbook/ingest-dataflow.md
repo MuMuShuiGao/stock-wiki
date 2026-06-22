@@ -13,11 +13,21 @@ Stage 1: 分析 (LLM)          → analysisText (中文报告)
     ▼
 Stage 2: 规划 (LLM + 对账)   → IngestPlan (JSON)
     │
-    ├─► Stage 3: 批量更新     → 写入已有 .md 页面
-    └─► Stage 4: 批量新建     → 写入新 .md 页面
-    │
-    ▼
-Housekeeping                 → 写 log, 更新 index.md
+    ├─► Stage 3: 批量更新     → LLM 输出 JSON+BODY 分块
+    └─► Stage 4: 批量新建     → LLM 输出 JSON+BODY 分块
+              │
+              ▼
+         parseAndWriteFileBlocks()
+              │  JSON → buildJsonFrontmatter() → 有序 JSON
+              │  拼装 ---json\n{json}\n---\n\n{body}
+              ▼
+         invoke("write_wiki")
+              │  Rust normalize_frontmatter() 校验 JSON + 按规范顺序重排
+              ▼
+         fs::write() → .md 落盘
+              │
+              ▼
+         Housekeeping          → 写 log, 更新 index.md
 ```
 
 ## 简单示例
@@ -163,25 +173,23 @@ LLM 首先返回结构化 JSON：
 
 ### Stage 3 输出：更新的已有页面
 
-LLM 为 `update` 列表中的每个页面输出完整的新内容，用 `---FILE:` / `ENDFILE` 分隔：
+LLM 为 `update` 列表中的每个页面输出两部分：**元数据 JSON** + `====BODY====` + **正文 Markdown**，用 `---FILE:` / `ENDFILE` 分隔：
 
 ```
 ---FILE: wiki/概念/消费电子.md---
----
-schema_version: 1
-title: "消费电子"
-type: "概念"
-summary: "涵盖消费电子产业链相关标的与趋势，包括智能手机、可穿戴、玻璃基板等方向"
-created: 2026-05-15 09:00:00
-updated: 2026-06-22 14:30:00
-last_reviewed: 2026-06-22 14:30:00
-parent: "大科技"
-related:
-  - "[[股票/沃格光电]]"
-sources:
-  - "沃格光电深度研报"
----
-
+{
+  "schema_version": 1,
+  "title": "消费电子",
+  "type": "概念",
+  "summary": "涵盖消费电子产业链相关标的与趋势...",
+  "created": "2026-05-15 09:00:00",
+  "updated": "2026-06-22 14:30:00",
+  "last_reviewed": "2026-06-22 14:30:00",
+  "parent": "大科技",
+  "related": ["[[股票/沃格光电]]"],
+  "sources": ["沃格光电深度研报"]
+}
+====BODY====
 # 消费电子
 
 ## 概述
@@ -196,33 +204,32 @@ sources:
 ENDFILE
 ```
 
+> `parseAndWriteFileBlocks()` 按 `====BODY====` 切分后，JSON 部分经 `buildJsonFrontmatter()` 转为有序 JSON frontmatter，正文保持原样。
+
 > 关键规则：**保留所有已有内容**，只追加新段落；不删除、不重写。
 
 ---
 
 ### Stage 4 输出：新建的页面
 
-LLM 为 `create` 列表中的每个页面生成全新内容：
+LLM 为 `create` 列表中的每个页面生成**元数据 JSON** + `====BODY====` + **正文 Markdown**：
 
 ```
 ---FILE: wiki/股票/沃格光电.md---
----
-schema_version: 1
-title: "沃格光电"
-type: "股票"
-summary: "国内玻璃基板龙头，受益消费电子复苏和国产替代，2026年净利润预计增长30%"
-created: 2026-06-22 14:30:00
-updated: 2026-06-22 14:30:00
-last_reviewed: 2026-06-22 14:30:00
-code: "SZ301580"
-industry: "电子"
-concepts:
-  - "玻璃基板"
-  - "消费电子"
-sources:
-  - "沃格光电深度研报"
----
-
+{
+  "schema_version": 1,
+  "title": "沃格光电",
+  "type": "股票",
+  "summary": "国内玻璃基板龙头，受益消费电子复苏和国产替代，2026年净利润预计增长30%",
+  "created": "2026-06-22 14:30:00",
+  "updated": "2026-06-22 14:30:00",
+  "last_reviewed": "2026-06-22 14:30:00",
+  "code": "SZ301580",
+  "industry": "电子",
+  "concepts": ["玻璃基板", "消费电子"],
+  "sources": ["沃格光电深度研报"]
+}
+====BODY====
 # 沃格光电
 
 ## 公司概况
@@ -231,22 +238,19 @@ sources:
 
 ENDFILE
 ---FILE: wiki/概念/玻璃基板.md---
----
-schema_version: 1
-title: "玻璃基板"
-type: "概念"
-summary: "芯片封装关键材料，国产替代空间大，龙头沃格光电"
-created: 2026-06-22 14:30:00
-updated: 2026-06-22 14:30:00
-last_reviewed: 2026-06-22 14:30:00
-parent: "消费电子"
-catalysts:
-  - "国产替代"
-  - "消费电子复苏"
-sources:
-  - "沃格光电深度研报"
----
-
+{
+  "schema_version": 1,
+  "title": "玻璃基板",
+  "type": "概念",
+  "summary": "芯片封装关键材料，国产替代空间大，龙头沃格光电",
+  "created": "2026-06-22 14:30:00",
+  "updated": "2026-06-22 14:30:00",
+  "last_reviewed": "2026-06-22 14:30:00",
+  "parent": "消费电子",
+  "catalysts": ["国产替代", "消费电子复苏"],
+  "sources": ["沃格光电深度研报"]
+}
+====BODY====
 # 玻璃基板
 
 ## 概述
@@ -255,18 +259,17 @@ sources:
 
 ENDFILE
 ---FILE: wiki/总结/沃格光电深度研报.md---
----
-schema_version: 1
-title: "沃格光电深度研报"
-type: "总结"
-summary: "源文档分析记录：沃格光电深度研报"
-created: 2026-06-22 14:30:00
-updated: 2026-06-22 14:30:00
-last_reviewed: 2026-06-22 14:30:00
-sources:
-  - "沃格光电深度研报"
----
-
+{
+  "schema_version": 1,
+  "title": "沃格光电深度研报",
+  "type": "总结",
+  "summary": "源文档分析记录：沃格光电深度研报",
+  "created": "2026-06-22 14:30:00",
+  "updated": "2026-06-22 14:30:00",
+  "last_reviewed": "2026-06-22 14:30:00",
+  "sources": ["沃格光电深度研报"]
+}
+====BODY====
 # 沃格光电深度研报
 
 （源文档的核心摘要和观点记录...）
@@ -274,7 +277,9 @@ sources:
 ENDFILE
 ```
 
-> 每个页面以 `---FILE: wiki/{type}/{title}.md---` 开头，独占一行 `ENDFILE` 结尾。`parseAndWriteFileBlocks()` 解析这些分块并调用 `write_wiki` 写入磁盘。
+> 每个页面以 `---FILE: wiki/{type}/{title}.md---` 开头，独占一行 `ENDFILE` 结尾。
+> `parseAndWriteFileBlocks()` 按 `====BODY====` 切分 JSON 和正文，`buildJsonFrontmatter()` 将 JSON 按规范顺序重排，拼装为完整 `.md`（`---json\n{json}\n---\n\n{body}`）后调用 `write_wiki` 写入。
+> Rust 端 `normalize_frontmatter()` 做二次校验：解析 JSON → 按规范顺序重新序列化 → 落盘。旧 YAML 格式文件写入时自动迁移为 JSON。
 
 ---
 

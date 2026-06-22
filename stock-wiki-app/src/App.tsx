@@ -1,8 +1,8 @@
 import { useEffect, useState, lazy, Suspense } from "react";
-import { Routes, Route, Link, useLocation } from "react-router-dom";
+import { Routes, Route, Link } from "react-router-dom";
 import "./App.css";
 
-// ── Lazy-load route pages to avoid pulling in Milkdown on startup ──
+// ── Lazy-load route pages for faster startup ──
 const ProjectListPage = lazy(() => import("./pages/ProjectListPage"));
 const ProjectDetailPage = lazy(() => import("./pages/ProjectDetailPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
@@ -37,7 +37,6 @@ function PageLoader() {
 
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(getInitialTheme);
-  const location = useLocation();
 
   useEffect(() => {
     applyTheme(theme);
@@ -62,8 +61,6 @@ export default function App() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   };
 
-  const isDetailPage = location.pathname.startsWith("/project/");
-
   return (
     <div className="h-screen w-screen flex flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
       {/* Top bar */}
@@ -75,11 +72,6 @@ export default function App() {
           >
             📈 Stock Wiki
           </Link>
-          {isDetailPage && (
-            <span className="text-xs text-[var(--color-text-muted)]">
-              /
-            </span>
-          )}
         </div>
 
         <div className="flex items-center gap-2">

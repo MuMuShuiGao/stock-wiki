@@ -49,7 +49,18 @@
       "Bash(curl -s -o NUL -w \"%{http_code}\" http://localhost:5173/src/main.tsx)",
       "Bash(curl -s http://localhost:5173/src/main.tsx)",
       "Bash(curl -s http://localhost:5173/src/index.css)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(dir /s /b d:\\\\Code\\\\stock-wiki\\\\*.md)",
+      "Bash(findstr /v node_modules)",
+      "Bash(findstr /v target)",
+      "Bash(findstr /v .git)",
+      "Bash(findstr /v handbook)",
+      "Bash(taskkill //PID 31368 //F)",
+      "Bash(pnpm install *)",
+      "Bash(dir /s /b \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\\\\src\\\\components\\\\\" 2>nul)",
+      "Bash(taskkill //F //IM app.exe)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(certutil -hashfile \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\\\\src\\\\components\\\\MarkdownPreview.tsx\" MD5)"
     ],
     "additionalDirectories": [
       "d:\\Code\\stock-wiki\\stock-wiki-app\\src-tauri"

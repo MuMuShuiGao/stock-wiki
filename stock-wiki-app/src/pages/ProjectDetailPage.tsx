@@ -1,5 +1,5 @@
 import { useParams } from "react-router-dom";
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as ContextMenu from "@radix-ui/react-context-menu";
@@ -7,10 +7,27 @@ import { useAppStore } from "../stores/appStore";
 import AnalysisModal from "../components/AnalysisModal";
 import ImportModal from "../components/ImportModal";
 import MarkdownPreview from "../components/MarkdownPreview";
-import ErrorBoundary from "../components/ErrorBoundary";
 
-// Milkdown is heavy (~10 MB) — only load when user starts editing
-const MarkdownEditor = lazy(() => import("../components/MarkdownEditor"));
+/** Shared textarea for editing markdown / plain text (shows raw source with # etc.) */
+function FallbackTextarea({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full h-full p-4 resize-none outline-none font-mono text-sm
+                 bg-transparent text-[var(--color-text)]"
+      placeholder={placeholder}
+    />
+  );
+}
 
 export default function ProjectDetailPage() {
   const { projectName } = useParams<{ projectName: string }>();
@@ -431,7 +448,7 @@ export default function ProjectDetailPage() {
                         : "bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-border)]"
                       }`}
                   >
-                    {isEditing ? "Editing" : "Preview"}
+                    {isEditing ? "Done" : "Edit"}
                   </button>
                 )}
                 <button
@@ -446,56 +463,12 @@ export default function ProjectDetailPage() {
 
             {/* Content */}
             <div className="flex-1 flex overflow-hidden">
-              {isEditing && isMarkdown ? (
-                <>
-                  {/* Editor pane */}
-                  <div className="flex-1 border-r border-[var(--color-border)] bg-[var(--color-editor-bg)] overflow-hidden">
-                    <ErrorBoundary fallback={
-                      <textarea
-                        value={fileContent}
-                        onChange={(e) => setFileContent(e.target.value)}
-                        className="w-full h-full p-4 resize-none outline-none font-mono text-sm
-                                   bg-transparent text-[var(--color-text)]"
-                      />
-                    }>
-                      <Suspense fallback={
-                        <textarea
-                          value={fileContent}
-                          onChange={(e) => setFileContent(e.target.value)}
-                          className="w-full h-full p-4 resize-none outline-none font-mono text-sm
-                                     bg-transparent text-[var(--color-text)]"
-                          placeholder="Loading editor..."
-                        />
-                      }>
-                        <MarkdownEditor
-                          value={fileContent}
-                          onChange={(v) => setFileContent(v)}
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </div>
-                  {/* Preview pane */}
-                  <div className="flex-1 overflow-y-auto p-4 bg-[var(--color-preview-bg)]">
-                    <p className="text-xs text-[var(--color-text-muted)] mb-2">
-                      Preview
-                    </p>
-                    <ErrorBoundary fallback={
-                      <pre className="whitespace-pre-wrap font-sans text-sm text-[var(--color-text)]">
-                        {fileContent || "(empty)"}
-                      </pre>
-                    }>
-                      <MarkdownPreview content={fileContent} />
-                    </ErrorBoundary>
-                  </div>
-                </>
-              ) : isEditing && !isMarkdown ? (
+              {isEditing ? (
                 <div className="flex-1 bg-[var(--color-editor-bg)]">
-                  <textarea
+                  <FallbackTextarea
                     value={fileContent}
-                    onChange={(e) => setFileContent(e.target.value)}
-                    className="w-full h-full p-4 resize-none outline-none font-mono text-sm
-                               bg-transparent text-[var(--color-text)]"
-                    placeholder="Start writing..."
+                    onChange={setFileContent}
+                    placeholder={isMarkdown ? "# Markdown 源码..." : "Start writing..."}
                   />
                 </div>
               ) : (
