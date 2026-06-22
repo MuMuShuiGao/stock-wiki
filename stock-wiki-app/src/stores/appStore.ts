@@ -35,6 +35,10 @@ interface AppState {
   llmConfig: LlmConfig | null;
   setLlmConfig: (c: LlmConfig | null) => void;
 
+  // ── Theme ──
+  themePreference: "dark" | "light" | "system";
+  setThemePreference: (t: "dark" | "light" | "system") => void;
+
   // ── Projects ──
   projects: FileEntry[];
   setProjects: (p: FileEntry[]) => void;
@@ -104,6 +108,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setWorkspace: (ws) => set({ workspace: ws }),
   llmConfig: null,
   setLlmConfig: (c) => set({ llmConfig: c }),
+  themePreference: (localStorage.getItem("stock-wiki-theme") as "dark" | "light" | "system") || "system",
+  setThemePreference: (t) => {
+    localStorage.setItem("stock-wiki-theme", t);
+    set({ themePreference: t });
+  },
   projects: [],
   setProjects: (p) => set({ projects: p }),
   files: [],

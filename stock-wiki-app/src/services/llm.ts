@@ -70,6 +70,74 @@ export function getDefaultBaseUrl(provider: LlmProvider): string {
   return PROVIDER_CAPABILITIES[provider]?.defaultBaseUrl ?? "";
 }
 
+/** 获取 provider 的默认模型 */
+export function getDefaultModel(provider: LlmProvider): string {
+  return PROVIDER_CAPABILITIES[provider]?.defaultModel ?? "";
+}
+
+/** 获取 provider 可选模型列表 */
+export function getProviderModels(provider: LlmProvider): string[] {
+  const MODELS: Record<LlmProvider, string[]> = {
+    deepseek: ["deepseek-chat", "deepseek-reasoner"],
+    openai: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini"],
+    anthropic: ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"],
+    custom: [],
+  };
+  return MODELS[provider] ?? [];
+}
+
+/** 测试 LLM 连接（不依赖已保存的配置，直接使用传入参数） */
+export async function testLlmConnection(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!baseUrl) return { ok: false, error: "API 地址为空" };
+  if (!apiKey) return { ok: false, error: "API 密钥为空" };
+  if (!model) return { ok: false, error: "模型名称为空" };
+
+  const endpoint = baseUrl.replace(/\/+$/, "") + "/v1/chat/completions";
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 5,
+        temperature: 0,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      return { ok: false, error: `HTTP ${res.status}${errText ? `: ${errText.substring(0, 200)}` : ""}` };
+    }
+
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return { ok: false, error: "API 返回了空内容" };
+    }
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { ok: false, error: "连接超时（15 秒）" };
+    }
+    return { ok: false, error: String(err) };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // ── JSON 提取工具 ─────────────────────────────────────────────────
 
 /**

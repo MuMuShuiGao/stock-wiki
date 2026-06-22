@@ -1,5 +1,6 @@
 import { useEffect, useState, lazy, Suspense } from "react";
 import { Routes, Route, Link } from "react-router-dom";
+import { useAppStore } from "./stores/appStore";
 import "./App.css";
 
 // ── Lazy-load route pages for faster startup ──
@@ -7,18 +8,10 @@ const ProjectListPage = lazy(() => import("./pages/ProjectListPage"));
 const ProjectDetailPage = lazy(() => import("./pages/ProjectDetailPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
-const THEME_KEY = "stock-wiki-theme";
-
 function getSystemTheme(): "dark" | "light" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
     : "light";
-}
-
-function getInitialTheme(): "dark" | "light" {
-  const stored = localStorage.getItem(THEME_KEY);
-  if (stored === "dark" || stored === "light") return stored;
-  return getSystemTheme();
 }
 
 function applyTheme(theme: "dark" | "light") {
@@ -36,21 +29,34 @@ function PageLoader() {
 }
 
 export default function App() {
-  const [theme, setTheme] = useState<"dark" | "light">(getInitialTheme);
+  const themePreference = useAppStore((s) => s.themePreference);
+  const setThemePreference = useAppStore.getState().setThemePreference;
 
+  const [effectiveTheme, setEffectiveTheme] = useState<"dark" | "light">(() => {
+    if (themePreference === "system") return getSystemTheme();
+    return themePreference;
+  });
+
+  // Compute effective theme from preference + system query
   useEffect(() => {
-    applyTheme(theme);
-    localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+    if (themePreference === "system") {
+      setEffectiveTheme(getSystemTheme());
+    } else {
+      setEffectiveTheme(themePreference);
+    }
+  }, [themePreference]);
 
-  // React to system theme changes when no explicit user preference
+  // Apply theme to DOM
+  useEffect(() => {
+    applyTheme(effectiveTheme);
+  }, [effectiveTheme]);
+
+  // React to system theme changes when preference is "system"
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     function handleChange() {
-      const stored = localStorage.getItem(THEME_KEY);
-      if (!stored) {
-        const sys = getSystemTheme();
-        setTheme(sys);
+      if (useAppStore.getState().themePreference === "system") {
+        setEffectiveTheme(getSystemTheme());
       }
     }
     mq.addEventListener("change", handleChange);
@@ -58,7 +64,13 @@ export default function App() {
   }, []);
 
   const toggleTheme = () => {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
+    const pref = useAppStore.getState().themePreference;
+    if (pref === "system") {
+      // If currently following system, switch to opposite of current effective
+      setThemePreference(effectiveTheme === "dark" ? "light" : "dark");
+    } else {
+      setThemePreference(pref === "dark" ? "light" : "dark");
+    }
   };
 
   return (
@@ -84,12 +96,18 @@ export default function App() {
           </Link>
           <button
             onClick={toggleTheme}
-            title={theme === "dark" ? "切换亮色模式" : "切换暗色模式"}
+            title={
+              themePreference === "system"
+                ? "当前跟随系统，点击切换"
+                : effectiveTheme === "dark"
+                  ? "切换亮色模式"
+                  : "切换暗色模式"
+            }
             className="text-lg px-2 py-1 rounded cursor-pointer
                        hover:bg-[var(--color-bg-tertiary)] transition-colors
                        leading-none"
           >
-            {theme === "dark" ? "☀️" : "🌙"}
+            {effectiveTheme === "dark" ? "☀️" : "🌙"}
           </button>
         </div>
       </header>
