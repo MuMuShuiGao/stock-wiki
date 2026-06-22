@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "../stores/appStore";
-import { saveLlmConfig } from "../services/llm";
+import {
+  saveLlmConfig,
+  detectProvider,
+  getDefaultBaseUrl,
+  type LlmProvider,
+} from "../services/llm";
+
+const PROVIDER_OPTIONS: { value: LlmProvider; label: string }[] = [
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "custom", label: "Custom" },
+];
 
 export default function SettingsPage() {
   const {
@@ -13,6 +25,7 @@ export default function SettingsPage() {
 
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [provider, setProvider] = useState<LlmProvider>("deepseek");
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -24,15 +37,23 @@ export default function SettingsPage() {
       if (config) {
         setBaseUrl(config.base_url || "");
         setApiKey(config.api_key || "");
+        setProvider(config.provider || detectProvider(config.base_url));
       }
     });
   }, []);
+
+  function handleProviderChange(p: LlmProvider) {
+    setProvider(p);
+    // 切换 provider 时自动填入默认 base_url（用户仍可手动覆盖）
+    const defaultUrl = getDefaultBaseUrl(p);
+    if (defaultUrl) setBaseUrl(defaultUrl);
+  }
 
   async function handleSaveLlmConfig() {
     setSaving(true);
     setSaved(false);
     try {
-      await saveLlmConfig(baseUrl || null, apiKey || null);
+      await saveLlmConfig(baseUrl || null, apiKey || null, provider);
       await refreshLlmConfig();
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -98,6 +119,26 @@ export default function SettingsPage() {
                          bg-[var(--color-bg)] text-[var(--color-text)] text-sm
                          outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
             />
+          </div>
+
+          {/* Provider selector */}
+          <div className="mb-3">
+            <label className="block text-xs font-medium mb-1 text-[var(--color-text-secondary)]">
+              Provider
+            </label>
+            <select
+              value={provider}
+              onChange={(e) => handleProviderChange(e.target.value as LlmProvider)}
+              className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)]
+                         bg-[var(--color-bg)] text-[var(--color-text)] text-sm
+                         outline-none focus:ring-2 focus:ring-[var(--color-accent)] cursor-pointer"
+            >
+              {PROVIDER_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* API Key */}

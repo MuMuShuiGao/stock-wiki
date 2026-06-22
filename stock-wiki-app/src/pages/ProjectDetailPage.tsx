@@ -23,9 +23,7 @@ export default function ProjectDetailPage() {
     fileContent,
     isEditing,
     error,
-    pipelineStatus,
-    preAnalysisEntities,
-    extractedText,
+    pipelineState,
     refreshFiles,
     setSelectedFile,
     setFileContent,
@@ -36,7 +34,8 @@ export default function ProjectDetailPage() {
     createFolder,
     deleteFile,
     setError,
-    startPreAnalysis,
+    runIngestPipeline,
+    confirmPlan,
     resetPipeline,
   } = useAppStore();
 
@@ -45,22 +44,37 @@ export default function ProjectDetailPage() {
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [contextFile, setContextFile] = useState<typeof files[0] | null>(null);
 
+  // ── 目录导航 ──
+  const [currentDir, setCurrentDir] = useState("");
+  const [dirStack, setDirStack] = useState<string[]>([]);
+
+  // ── 文件夹展开 ──
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [folderChildren, setFolderChildren] = useState<Record<string, typeof files>>({});
+
   // Drag-and-drop import
   const [isDragOver, setIsDragOver] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<string[]>([]);
   const [showImportModal, setShowImportModal] = useState(false);
 
-  // Compute current directory path
+  // Compute paths
   const projectDir = workspace ? `${workspace}\\${decodedName}` : "";
   const rawDir = projectDir ? `${projectDir}\\raw` : "";
 
+  // 初始化：首次拿到 projectDir 时设置 currentDir
   useEffect(() => {
-    if (projectDir) {
-      refreshFiles(projectDir);
-      // Ensure wiki dirs exist
-      invoke("ensure_wiki_dirs", { projectName: decodedName }).catch(() => {});
+    if (projectDir && !currentDir) {
+      setCurrentDir(projectDir);
     }
   }, [projectDir]);
+
+  // currentDir 变化时刷新文件列表
+  useEffect(() => {
+    if (currentDir) {
+      refreshFiles(currentDir);
+      invoke("ensure_wiki_dirs", { projectName: decodedName }).catch(() => {});
+    }
+  }, [currentDir]);
 
   // Drag-and-drop listeners
   useEffect(() => {
@@ -94,8 +108,58 @@ export default function ProjectDetailPage() {
       await readFile(entry.path);
       setIsEditing(false);
     } else {
-      await refreshFiles(entry.path);
+      // 文件夹单击：仅展开/折叠，不导航进入
+      toggleExpand(entry);
     }
+  }
+
+  /** 双击进入文件夹 */
+  function handleFolderDoubleClick(entry: typeof files[0]) {
+    if (!entry.is_dir) return;
+    setDirStack((prev) => [...prev, currentDir]);
+    setCurrentDir(entry.path);
+    setSelectedFile(null);
+    setExpandedFolders(new Set());
+    setFolderChildren({});
+  }
+
+  function handleBack() {
+    const parent = dirStack[dirStack.length - 1];
+    if (!parent) return;
+    setDirStack((prev) => prev.slice(0, -1));
+    setCurrentDir(parent);
+    setSelectedFile(null);
+    // 清空展开状态
+    setExpandedFolders(new Set());
+    setFolderChildren({});
+  }
+
+  async function toggleExpand(entry: typeof files[0]) {
+    const path = entry.path;
+    if (expandedFolders.has(path)) {
+      setExpandedFolders((prev) => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
+    } else {
+      try {
+        const children: typeof files = await invoke("list_directory", { dirPath: path });
+        setFolderChildren((prev) => ({ ...prev, [path]: children }));
+        setExpandedFolders((prev) => {
+          const next = new Set(prev);
+          next.add(path);
+          return next;
+        });
+      } catch {
+        // 权限不足或读取失败，静默忽略
+      }
+    }
+  }
+
+  function handleToggleExpand(e: React.MouseEvent, entry: typeof files[0]) {
+    e.stopPropagation();
+    toggleExpand(entry);
   }
 
   async function handleSave() {
@@ -107,7 +171,7 @@ export default function ProjectDetailPage() {
   async function handleCreateFile() {
     const name = newItemName.trim();
     if (!name) return;
-    await createFile(projectDir, name, "");
+    await createFile(currentDir, name, "");
     setNewItemName("");
     setShowNewFileInput(false);
   }
@@ -115,7 +179,7 @@ export default function ProjectDetailPage() {
   async function handleCreateFolder() {
     const name = newItemName.trim();
     if (!name) return;
-    await createFolder(projectDir, name);
+    await createFolder(currentDir, name);
     setNewItemName("");
     setShowNewFolderInput(false);
   }
@@ -132,16 +196,54 @@ export default function ProjectDetailPage() {
   async function handleAnalyzeFile(file: typeof files[0]) {
     if (file.is_dir) return;
     setContextFile(null);
-    await startPreAnalysis(decodedName, file.path);
+    await runIngestPipeline(decodedName, file.path);
   }
 
   const isMarkdown =
     selectedFile?.name.endsWith(".md") || selectedFile?.name.endsWith(".mdx");
 
-  const showAnalysisModal =
-    pipelineStatus === "awaiting_confirmation" ||
-    pipelineStatus === "generating" ||
-    pipelineStatus === "done";
+  /** 递归渲染目录树 */
+  function renderEntries(entries: typeof files, depth: number): React.ReactNode {
+    return entries.map((entry) => {
+      const isExpanded = expandedFolders.has(entry.path);
+      const children = folderChildren[entry.path];
+
+      return (
+        <div key={entry.path}>
+          <div
+            onClick={() => handleFileClick(entry)}
+            onDoubleClick={entry.is_dir ? () => handleFolderDoubleClick(entry) : undefined}
+            onContextMenu={() => setContextFile(entry)}
+            className={`file-tree-item flex items-center gap-1 px-2 py-1.5 rounded text-sm select-none
+              ${selectedFile?.path === entry.path ? "selected" : ""}`}
+            style={{ paddingLeft: `${8 + depth * 16}px` }}
+          >
+            {/* 展开/折叠箭头 */}
+            {entry.is_dir ? (
+              <span
+                onClick={(e) => handleToggleExpand(e, entry)}
+                className="text-xs w-4 h-4 flex items-center justify-center rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer shrink-0"
+              >
+                {isExpanded ? "▼" : "▶"}
+              </span>
+            ) : (
+              <span className="w-4 shrink-0" />
+            )}
+            <span className="text-sm shrink-0">
+              {entry.is_dir ? (isExpanded ? "📂" : "📁") : "📄"}
+            </span>
+            <span className="truncate">{entry.name}</span>
+          </div>
+          {/* 递归渲染展开的子目录 */}
+          {entry.is_dir && isExpanded && children && children.length > 0 && (
+            <div>{renderEntries(children, depth + 1)}</div>
+          )}
+        </div>
+      );
+    });
+  }
+
+  const showAnalysisModal = pipelineState.plan != null;
 
   return (
     <div className="flex h-full relative">
@@ -166,17 +268,32 @@ export default function ProjectDetailPage() {
                         flex flex-col"
       >
         {/* Project header */}
-        <div className="flex items-center px-4 py-3 border-b border-[var(--color-border)]">
-          <span className="font-semibold text-sm truncate">📁 {decodedName}</span>
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)]">
+          {dirStack.length > 0 && (
+            <button
+              onClick={handleBack}
+              title="返回上级目录"
+              className="text-lg leading-none px-1 py-0.5 rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer shrink-0"
+            >
+              ←
+            </button>
+          )}
+          <span className="font-semibold text-sm truncate">
+            📁 {currentDir === projectDir ? decodedName : currentDir.replace(projectDir + "\\", "")}
+          </span>
         </div>
 
         {/* Pipeline status indicator */}
-        {(pipelineStatus === "extracting" || pipelineStatus === "pre_analyzing") && (
+        {(pipelineState.status === "extracting" ||
+          pipelineState.status === "analyzing" ||
+          pipelineState.status === "planning") && (
           <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-accent)]/10">
             <p className="text-xs text-[var(--color-accent)]">
-              {pipelineStatus === "extracting"
+              {pipelineState.status === "extracting"
                 ? "📄 提取文件文本..."
-                : "🤖 LLM 预分析中..."}
+                : pipelineState.status === "analyzing"
+                  ? "🔍 LLM 分析源文档..."
+                  : "📋 LLM 规划变更..."}
             </p>
           </div>
         )}
@@ -189,20 +306,7 @@ export default function ProjectDetailPage() {
                 Empty project. Create a file or folder to start.
               </p>
             ) : (
-              files.map((entry) => (
-                <div
-                  key={entry.path}
-                  onClick={() => handleFileClick(entry)}
-                  onContextMenu={() => setContextFile(entry)}
-                  className={`file-tree-item flex items-center gap-2 px-2 py-1.5 rounded text-sm
-                    ${selectedFile?.path === entry.path ? "selected" : ""}`}
-                >
-                  <span className="text-sm">
-                    {entry.is_dir ? "📁" : "📄"}
-                  </span>
-                  <span className="truncate">{entry.name}</span>
-                </div>
-              ))
+              renderEntries(files, 0)
             )}
           </ContextMenu.Trigger>
 
@@ -406,7 +510,7 @@ export default function ProjectDetailPage() {
             <div className="text-center">
               <p className="text-3xl mb-2">📁</p>
               <p className="text-sm">{selectedFile.name}</p>
-              <p className="text-xs mt-1">Select a file inside this folder</p>
+              <p className="text-xs mt-1">双击进入文件夹 · 单击展开子目录</p>
             </div>
           </div>
         ) : (
@@ -431,12 +535,12 @@ export default function ProjectDetailPage() {
       )}
 
       {/* Analysis modal */}
-      {showAnalysisModal && (
+      {showAnalysisModal && pipelineState.plan && (
         <AnalysisModal
-          projectName={decodedName}
-          sourceText={extractedText}
-          entities={preAnalysisEntities}
+          plan={pipelineState.plan}
+          pipelineState={pipelineState}
           onClose={() => resetPipeline()}
+          onConfirm={(confirmedPlan) => confirmPlan(decodedName, confirmedPlan)}
         />
       )}
 

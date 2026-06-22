@@ -1,3 +1,4 @@
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,14 @@ struct FileEntry {
 struct LlmConfig {
     base_url: Option<String>,
     api_key: Option<String>,
+    #[serde(default = "default_provider")]
+    provider: String,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+fn default_provider() -> String {
+    "deepseek".into()
 }
 
 impl Default for LlmConfig {
@@ -23,6 +32,8 @@ impl Default for LlmConfig {
         Self {
             base_url: Some("https://api.deepseek.com".into()),
             api_key: None,
+            provider: "deepseek".into(),
+            model: None,
         }
     }
 }
@@ -175,8 +186,16 @@ fn extract_csv_text(file_path: &Path) -> Result<String, String> {
     Ok(output)
 }
 
-fn extract_md_text(file_path: &Path) -> Result<String, String> {
-    fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))
+const WIKI_TYPES: &[&str] = &["股票", "概念", "模式", "市场环境", "总结"];
+
+fn create_wiki_dirs(project_path: &Path) -> Result<(), String> {
+    fs::create_dir_all(project_path.join("raw")).map_err(|e| e.to_string())?;
+    let wiki_base = project_path.join("wiki");
+    for sub_dir in WIKI_TYPES {
+        fs::create_dir_all(wiki_base.join(sub_dir)).map_err(|e| e.to_string())?;
+    }
+    fs::create_dir_all(wiki_base.join("logs")).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ── Workspace commands ──────────────────────────────────────────
@@ -189,11 +208,13 @@ async fn select_workspace(app: tauri::AppHandle) -> Result<Option<String>, Strin
 
     if let Some(path) = path {
         let workspace = path.to_string();
+        info!("工作区已选择: {}", workspace);
         let mut config = load_config(&app);
         config.workspace_path = Some(workspace.clone());
         save_config(&app, &config)?;
         Ok(Some(workspace))
     } else {
+        info!("工作区选择已取消");
         Ok(None)
     }
 }
@@ -210,6 +231,7 @@ fn get_workspace(app: tauri::AppHandle) -> Result<Option<String>, String> {
 fn extract_text(file_path: String) -> Result<String, String> {
     let path = Path::new(&file_path);
     if !path.exists() {
+        error!("提取文本失败: 文件不存在 - {}", file_path);
         return Err("File does not exist".into());
     }
 
@@ -219,17 +241,25 @@ fn extract_text(file_path: String) -> Result<String, String> {
         .unwrap_or("")
         .to_lowercase();
 
-    match ext.as_str() {
+    info!("开始提取文本: {} (类型: {})", file_path, ext);
+    let result = match ext.as_str() {
         "pdf" => extract_pdf_text(path),
         "xlsx" | "xls" => extract_excel_text(path),
         "csv" => extract_csv_text(path),
-        "md" | "markdown" | "txt" => extract_md_text(path),
+        "md" | "markdown" | "txt" => {
+            fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))
+        }
         _ => {
             // Try reading as plain text for unknown extensions
             fs::read_to_string(path)
                 .map_err(|e| format!("Unsupported file type '{}': {}", ext, e))
         }
+    };
+    match &result {
+        Ok(_) => info!("文本提取成功: {}", file_path),
+        Err(e) => error!("文本提取失败: {}", e),
     }
+    result
 }
 
 // ── LLM config commands ────────────────────────────────────────
@@ -241,7 +271,14 @@ fn get_llm_config(app: tauri::AppHandle) -> Result<LlmConfig, String> {
 }
 
 #[tauri::command]
-fn set_llm_config(app: tauri::AppHandle, base_url: Option<String>, api_key: Option<String>) -> Result<(), String> {
+fn set_llm_config(
+    app: tauri::AppHandle,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<(), String> {
+    info!("更新 LLM 配置: base_url={:?}, provider={:?}, model={:?}", base_url, provider, model);
     let mut config = load_config(&app);
     if let Some(url) = base_url {
         config.llm.base_url = Some(url);
@@ -249,7 +286,13 @@ fn set_llm_config(app: tauri::AppHandle, base_url: Option<String>, api_key: Opti
     if let Some(key) = api_key {
         config.llm.api_key = Some(key);
     }
-    save_config(&app, &config)
+    if let Some(p) = provider {
+        config.llm.provider = p;
+    }
+    config.llm.model = model;
+    save_config(&app, &config)?;
+    info!("LLM 配置已保存");
+    Ok(())
 }
 
 // ── Project commands ────────────────────────────────────────────
@@ -260,9 +303,11 @@ fn list_projects(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
     let workspace = config
         .workspace_path
         .ok_or("No workspace configured")?;
+    info!("列出工作区项目: {}", workspace);
     let ws_path = Path::new(&workspace);
 
     if !ws_path.exists() {
+        info!("工作区目录不存在，返回空列表");
         return Ok(vec![]);
     }
 
@@ -280,24 +325,20 @@ fn list_projects(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
         }
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
+    info!("找到 {} 个项目", entries.len());
     Ok(entries)
 }
 
 #[tauri::command]
 fn create_project(app: tauri::AppHandle, name: String) -> Result<FileEntry, String> {
     let ws_path = get_workspace_path(&app)?;
+    info!("创建项目: {}", name);
     let project_path = sanitize_path(&ws_path, &[&name])?;
 
     fs::create_dir(&project_path).map_err(|e| e.to_string())?;
+    create_wiki_dirs(&project_path)?;
 
-    // Create raw/ and wiki/ subdirectories
-    fs::create_dir(project_path.join("raw")).map_err(|e| e.to_string())?;
-    let wiki_base = project_path.join("wiki");
-    fs::create_dir(&wiki_base).map_err(|e| e.to_string())?;
-    for sub_dir in &["股票", "概念", "模式"] {
-        fs::create_dir(wiki_base.join(sub_dir)).map_err(|e| e.to_string())?;
-    }
-
+    info!("项目创建成功: {} (路径: {})", name, project_path.display());
     Ok(FileEntry {
         name,
         path: project_path.to_string_lossy().to_string(),
@@ -308,19 +349,23 @@ fn create_project(app: tauri::AppHandle, name: String) -> Result<FileEntry, Stri
 #[tauri::command]
 fn delete_project(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let ws_path = get_workspace_path(&app)?;
+    info!("删除项目: {}", name);
     let project_path = sanitize_path(&ws_path, &[&name])?;
 
     fs::remove_dir_all(&project_path).map_err(|e| e.to_string())?;
+    info!("项目已删除: {}", name);
     Ok(())
 }
 
 #[tauri::command]
 fn rename_project(app: tauri::AppHandle, old_name: String, new_name: String) -> Result<(), String> {
     let ws_path = get_workspace_path(&app)?;
+    info!("重命名项目: {} -> {}", old_name, new_name);
     let old_path = sanitize_path(&ws_path, &[&old_name])?;
     let new_path = sanitize_path(&ws_path, &[&new_name])?;
 
     fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
+    info!("项目重命名成功");
     Ok(())
 }
 
@@ -330,6 +375,7 @@ fn rename_project(app: tauri::AppHandle, old_name: String, new_name: String) -> 
 fn list_directory(dir_path: String) -> Result<Vec<FileEntry>, String> {
     let path = Path::new(&dir_path);
     if !path.exists() || !path.is_dir() {
+        error!("列出目录失败: 路径不存在或不是目录 - {}", dir_path);
         return Err("Directory does not exist".into());
     }
 
@@ -356,6 +402,7 @@ fn list_directory(dir_path: String) -> Result<Vec<FileEntry>, String> {
 fn create_file(parent_dir: String, name: String, content: Option<String>) -> Result<FileEntry, String> {
     let parent = Path::new(&parent_dir);
     let file_path = sanitize_path(parent, &[&name])?;
+    info!("创建文件: {}", file_path.display());
 
     fs::write(&file_path, content.unwrap_or_default()).map_err(|e| e.to_string())?;
 
@@ -370,6 +417,7 @@ fn create_file(parent_dir: String, name: String, content: Option<String>) -> Res
 fn create_folder(parent_dir: String, name: String) -> Result<FileEntry, String> {
     let parent = Path::new(&parent_dir);
     let folder_path = sanitize_path(parent, &[&name])?;
+    info!("创建文件夹: {}", folder_path.display());
 
     fs::create_dir(&folder_path).map_err(|e| e.to_string())?;
 
@@ -387,12 +435,20 @@ fn read_file(file_path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn write_file(file_path: String, content: String) -> Result<(), String> {
-    fs::write(&file_path, content).map_err(|e| e.to_string())
+    if let Some(parent) = Path::new(&file_path).parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    info!("写入文件: {}", file_path);
+    fs::write(&file_path, content).map_err(|e| {
+        error!("写入文件失败: {} - {}", file_path, e);
+        e.to_string()
+    })
 }
 
 #[tauri::command]
 fn delete_file(file_path: String) -> Result<(), String> {
     let path = Path::new(&file_path);
+    info!("删除: {}", file_path);
     if path.is_dir() {
         fs::remove_dir_all(path).map_err(|e| e.to_string())?;
     } else {
@@ -406,8 +462,12 @@ fn rename_file(file_path: String, new_name: String) -> Result<String, String> {
     let path = Path::new(&file_path);
     let parent = path.parent().ok_or("Invalid path")?;
     let new_path = parent.join(&new_name);
+    info!("重命名: {} -> {}", file_path, new_path.display());
 
-    fs::rename(&path, &new_path).map_err(|e| e.to_string())?;
+    fs::rename(&path, &new_path).map_err(|e| {
+        error!("重命名失败: {}", e);
+        e.to_string()
+    })?;
 
     Ok(new_path.to_string_lossy().to_string())
 }
@@ -418,8 +478,12 @@ fn move_file(source: String, dest_dir: String) -> Result<String, String> {
     let dest = Path::new(&dest_dir);
     let name = src.file_name().ok_or("Invalid source path")?;
     let dest_path = dest.join(name);
+    info!("移动: {} -> {}", source, dest_path.display());
 
-    fs::rename(&src, &dest_path).map_err(|e| e.to_string())?;
+    fs::rename(&src, &dest_path).map_err(|e| {
+        error!("移动失败: {}", e);
+        e.to_string()
+    })?;
 
     Ok(dest_path.to_string_lossy().to_string())
 }
@@ -444,10 +508,10 @@ fn check_wiki_exists(app: tauri::AppHandle, project_name: String, wiki_type: Str
 
 #[tauri::command]
 fn read_wiki(file_path: String) -> Result<String, String> {
-    if !Path::new(&file_path).exists() {
-        return Err("Wiki page does not exist".into());
-    }
-    fs::read_to_string(&file_path).map_err(|e| e.to_string())
+    fs::read_to_string(&file_path).map_err(|e| {
+        error!("读取 Wiki 失败: {} - {}", file_path, e);
+        e.to_string()
+    })
 }
 
 #[tauri::command]
@@ -458,6 +522,11 @@ fn write_wiki(
     title: String,
     content: String,
 ) -> Result<String, String> {
+    if !WIKI_TYPES.contains(&wiki_type.as_str()) {
+        error!("写入 Wiki 失败: 无效类型 '{}'", wiki_type);
+        return Err(format!("Invalid wiki type: '{}'", wiki_type));
+    }
+
     let ws_path = get_workspace_path(&app)?;
     let wiki_base = ws_path.join(&project_name).join("wiki");
 
@@ -474,6 +543,7 @@ fn write_wiki(
         || title.contains('>')
         || title.contains('|')
     {
+        error!("写入 Wiki 失败: 无效标题 '{}'", title);
         return Err(format!("Invalid title for wiki page: '{}'", title));
     }
 
@@ -483,15 +553,13 @@ fn write_wiki(
     let safe_filename = format!("{}.md", &title);
     let file_path = wiki_dir.join(&safe_filename);
 
-    // Extra guard: ensure resolved path is under wiki base
-    let canonical_base = wiki_base.canonicalize().unwrap_or(wiki_base.clone());
-    let canonical_file = file_path.canonicalize().unwrap_or(file_path.clone());
-    if !canonical_file.starts_with(&canonical_base) {
-        return Err("Path traversal detected in wiki path".into());
-    }
+    info!("写入 Wiki: {}/{}", wiki_type, title);
+    fs::write(&file_path, &content).map_err(|e| {
+        error!("写入 Wiki 失败: {}", e);
+        e.to_string()
+    })?;
 
-    fs::write(&file_path, &content).map_err(|e| e.to_string())?;
-
+    info!("Wiki 已保存: {}", file_path.display());
     Ok(file_path.to_string_lossy().to_string())
 }
 
@@ -501,6 +569,7 @@ fn write_wiki(
 fn import_file(source_path: String, dest_dir: String) -> Result<FileEntry, String> {
     let src = Path::new(&source_path);
     if !src.exists() {
+        error!("导入失败: 源文件不存在 - {}", source_path);
         return Err(format!("Source file does not exist: {}", source_path));
     }
     let name = src
@@ -508,6 +577,8 @@ fn import_file(source_path: String, dest_dir: String) -> Result<FileEntry, Strin
         .ok_or("Invalid source path")?
         .to_string_lossy()
         .to_string();
+
+    info!("导入文件: {} -> {}", source_path, dest_dir);
 
     let dest = Path::new(&dest_dir);
     let mut final_path = dest.join(&name);
@@ -538,11 +609,133 @@ fn import_file(source_path: String, dest_dir: String) -> Result<FileEntry, Strin
         .to_string_lossy()
         .to_string();
 
+    info!("文件导入完成: {}", final_path.display());
     Ok(FileEntry {
         name: final_name,
         path: final_path.to_string_lossy().to_string(),
         is_dir: false,
     })
+}
+
+// ── Append wiki index ────────────────────────────────────────────
+
+#[tauri::command]
+fn append_wiki_index(
+    app: tauri::AppHandle,
+    project_name: String,
+    wiki_type: String,
+    title: String,
+    summary: String,
+) -> Result<(), String> {
+    if !WIKI_TYPES.contains(&wiki_type.as_str()) {
+        error!("追加索引失败: 无效类型 '{}'", wiki_type);
+        return Err(format!("Invalid wiki type: '{}'", wiki_type));
+    }
+    let ws_path = get_workspace_path(&app)?;
+    let index_path = ws_path.join(&project_name).join("wiki").join("index.md");
+
+    let existing = std::fs::read_to_string(&index_path).unwrap_or_default();
+    let new_entry = if summary.is_empty() {
+        format!("- [[{}/{}]]", wiki_type, title)
+    } else {
+        format!("- [[{}/{}]] — {}", wiki_type, title, summary)
+    };
+
+    // 将现有内容按节解析为 Vec<(section_header, Vec<entry>)>
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current_section: Option<String> = None;
+    let mut current_entries: Vec<String> = Vec::new();
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("## ") {
+            // 保存上一节
+            if let Some(sec) = current_section.take() {
+                sections.push((sec, std::mem::take(&mut current_entries)));
+            }
+            current_section = Some(trimmed.to_string());
+        } else if trimmed.starts_with("- [[") && current_section.is_some() {
+            current_entries.push(trimmed.to_string());
+        }
+        // 空行和非条目行直接跳过
+    }
+    if let Some(sec) = current_section.take() {
+        sections.push((sec, current_entries));
+    }
+
+    // 提取已有条目的 wikilink 前缀（去掉 " — summary" 部分），用于去重
+    let wikilink_prefix = format!("[[{}/{}]]", wiki_type, title);
+    let is_dup = |entry: &str| -> bool {
+        let link_part = entry.trim_start_matches("- ").split(" — ").next().unwrap_or("");
+        link_part == wikilink_prefix
+    };
+
+    // 找到目标节（不存在则创建）
+    let target_header = format!("## {}", wiki_type);
+    let target_idx = sections.iter().position(|(h, _)| h == &target_header);
+
+    match target_idx {
+        Some(idx) => {
+            let entries = &mut sections[idx].1;
+            // 去重：已有相同 wikilink 则跳过
+            if entries.iter().any(|e| is_dup(e)) {
+                info!("索引条目已存在，跳过: {} / {}", wiki_type, title);
+                return Ok(());
+            }
+            // 按 title 字母序插入（按 wikilink 前缀排序，忽略 summary）
+            let sort_key = format!("- {}", wikilink_prefix);
+            let insert_pos = entries
+                .binary_search_by(|e| e.split(" — ").next().unwrap_or("").cmp(&sort_key))
+                .unwrap_or_else(|pos| pos);
+            entries.insert(insert_pos, new_entry);
+        }
+        None => {
+            // 新建节，插入到正确位置
+            let insert_pos = WIKI_TYPES
+                .iter()
+                .position(|&s| s == wiki_type)
+                .unwrap_or(WIKI_TYPES.len());
+            // 找到应插入的 section 位置
+            let mut section_pos = sections.len();
+            for (i, (header, _)) in sections.iter().enumerate() {
+                let sec_name = header.trim_start_matches("## ");
+                if let Some(pos) = WIKI_TYPES.iter().position(|&s| s == sec_name) {
+                    if pos > insert_pos {
+                        section_pos = i;
+                        break;
+                    }
+                }
+            }
+            sections.insert(
+                section_pos,
+                (target_header, vec![new_entry]),
+            );
+        }
+    }
+
+    // 重建 index.md 内容，按 WIKI_TYPES 顺序排列
+    let mut section_map: std::collections::BTreeMap<usize, Vec<String>> = std::collections::BTreeMap::new();
+    for (header, entries) in &sections {
+        let sec_name = header.trim_start_matches("## ");
+        let order = WIKI_TYPES.iter().position(|&s| s == sec_name).unwrap_or(99);
+        let mut lines = vec![header.clone()];
+        lines.extend(entries.iter().cloned());
+        lines.push(String::new()); // 末尾空行
+        section_map.entry(order).or_default().extend(lines);
+    }
+
+    let mut output = String::new();
+    for (_order, lines) in section_map {
+        for line in lines {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+
+    std::fs::write(&index_path, output).map_err(|e| e.to_string())?;
+
+    info!("已追加索引: {} / {}", wiki_type, title);
+    Ok(())
 }
 
 // ── Ensure wiki directories exist in project ────────────────────
@@ -551,16 +744,8 @@ fn import_file(source_path: String, dest_dir: String) -> Result<FileEntry, Strin
 fn ensure_wiki_dirs(app: tauri::AppHandle, project_name: String) -> Result<(), String> {
     let ws_path = get_workspace_path(&app)?;
     let project_base = ws_path.join(&project_name);
-
-    // Ensure raw/ directory
-    fs::create_dir_all(project_base.join("raw")).map_err(|e| e.to_string())?;
-
-    // Ensure wiki/ subdirectories
-    let wiki_base = project_base.join("wiki");
-    for sub_dir in &["股票", "概念", "模式"] {
-        fs::create_dir_all(wiki_base.join(sub_dir)).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    info!("确保 Wiki 目录结构存在: {}", project_name);
+    create_wiki_dirs(&project_base)
 }
 
 // ── App entry point ─────────────────────────────────────────────
@@ -570,13 +755,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
+            info!("stock-wiki 后端已启动");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -608,6 +792,7 @@ pub fn run() {
             read_wiki,
             write_wiki,
             ensure_wiki_dirs,
+            append_wiki_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

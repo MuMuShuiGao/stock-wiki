@@ -1,29 +1,30 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  LlmConfig,
-  PreAnalysisEntity,
-} from "../services/llm";
+import type { LlmConfig } from "../services/llm";
+import { getLlmConfig } from "../services/llm";
+import { logInfo, logWarn, logError } from "../services/logger";
 import {
-  runPreAnalysis,
-  generateWiki,
-  getLlmConfig,
-} from "../services/llm";
+  runStage1Analysis,
+  runStage2Planning,
+  batchUpdateWikiPages,
+  batchCreateWikiPages,
+  writeLogMd,
+  appendWikiIndex,
+  extractAnalysisSummary,
+  extractSummaryFromFrontmatter,
+  initialPipelineState,
+  type PlannedPage,
+  type IngestPlan,
+  type BatchWriteResult,
+  type StageProgress,
+  type PipelineState,
+} from "../services/ingest";
 
 export interface FileEntry {
   name: string;
   path: string;
   is_dir: boolean;
 }
-
-export type PipelineStatus =
-  | "idle"
-  | "extracting"
-  | "pre_analyzing"
-  | "awaiting_confirmation"
-  | "generating"
-  | "done"
-  | "error";
 
 interface AppState {
   // ── Workspace ──
@@ -37,10 +38,6 @@ interface AppState {
   // ── Projects ──
   projects: FileEntry[];
   setProjects: (p: FileEntry[]) => void;
-
-  // ── Current project ──
-  currentProject: string | null;
-  setCurrentProject: (name: string | null) => void;
 
   // ── File tree ──
   files: FileEntry[];
@@ -58,26 +55,13 @@ interface AppState {
   isEditing: boolean;
   setIsEditing: (v: boolean) => void;
 
-  // ── Loading states ──
-  loading: boolean;
-  setLoading: (v: boolean) => void;
-
   // ── Error ──
   error: string | null;
   setError: (e: string | null) => void;
 
   // ── LLM Pipeline ──
-  pipelineStatus: PipelineStatus;
-  setPipelineStatus: (s: PipelineStatus) => void;
-
-  extractedText: string;
-  setExtractedText: (t: string) => void;
-
-  preAnalysisEntities: PreAnalysisEntity[];
-  setPreAnalysisEntities: (e: PreAnalysisEntity[]) => void;
-
-  sourceFilePath: string | null;
-  setSourceFilePath: (p: string | null) => void;
+  pipelineState: PipelineState;
+  setPipelineState: (patch: Partial<PipelineState>) => void;
 
   // ── Actions: Workspace ──
   refreshWorkspace: () => Promise<void>;
@@ -90,7 +74,6 @@ interface AppState {
   refreshProjects: () => Promise<void>;
   createProject: (name: string) => Promise<void>;
   deleteProject: (name: string) => Promise<void>;
-  renameProject: (oldName: string, newName: string) => Promise<void>;
 
   // ── Actions: Files ──
   refreshFiles: (dirPath: string) => Promise<void>;
@@ -99,19 +82,20 @@ interface AppState {
   readFile: (filePath: string) => Promise<void>;
   writeFile: (filePath: string, content: string) => Promise<void>;
   deleteFile: (filePath: string) => Promise<void>;
-  renameFile: (filePath: string, newName: string) => Promise<void>;
-  moveFile: (source: string, destDir: string) => Promise<void>;
 
   importFiles: (sourcePath: string, destDir: string) => Promise<void>;
   // ── Actions: LLM Pipeline ──
-  extractText: (filePath: string) => Promise<void>;
-  startPreAnalysis: (projectName: string, filePath: string) => Promise<void>;
-  confirmAndGenerate: (
-    projectName: string,
-    sourceText: string,
-    entities: PreAnalysisEntity[],
-  ) => Promise<void>;
+  /** 执行 Stage 1+2：提取文本、分析、规划，停在 awaiting_confirmation */
+  runIngestPipeline: (projectName: string, filePath: string) => Promise<void>;
+  /** 用户确认计划后执行 Stage 3+4+housekeeping */
+  confirmPlan: (projectName: string, plan: IngestPlan) => Promise<void>;
+  /** 重置管道 */
   resetPipeline: () => void;
+}
+
+/** 从完整路径提取文件名（兼容 Windows / Unix 分隔符） */
+function basename(filePath: string): string {
+  return filePath.split("\\").pop() || filePath.split("/").pop() || filePath;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -122,8 +106,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setLlmConfig: (c) => set({ llmConfig: c }),
   projects: [],
   setProjects: (p) => set({ projects: p }),
-  currentProject: null,
-  setCurrentProject: (name) => set({ currentProject: name }),
   files: [],
   setFiles: (f) => set({ files: f }),
   selectedFile: null,
@@ -132,20 +114,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFileContent: (c) => set({ fileContent: c }),
   isEditing: false,
   setIsEditing: (v) => set({ isEditing: v }),
-  loading: false,
-  setLoading: (v) => set({ loading: v }),
   error: null,
   setError: (e) => set({ error: e }),
 
   // Pipeline state
-  pipelineStatus: "idle",
-  setPipelineStatus: (s) => set({ pipelineStatus: s }),
-  extractedText: "",
-  setExtractedText: (t) => set({ extractedText: t }),
-  preAnalysisEntities: [],
-  setPreAnalysisEntities: (e) => set({ preAnalysisEntities: e }),
-  sourceFilePath: null,
-  setSourceFilePath: (p) => set({ sourceFilePath: p }),
+  pipelineState: initialPipelineState(),
+  setPipelineState: (patch) =>
+    set((prev) => ({
+      pipelineState: { ...prev.pipelineState, ...patch },
+    })),
 
   // ── Workspace ──
   refreshWorkspace: async () => {
@@ -207,15 +184,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  renameProject: async (oldName: string, newName: string) => {
-    try {
-      await invoke("rename_project", { oldName, newName });
-      await get().refreshProjects();
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
   // ── Files ──
   refreshFiles: async (dirPath: string) => {
     try {
@@ -271,150 +239,335 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  renameFile: async (filePath: string, newName: string) => {
-    try {
-      await invoke("rename_file", { filePath, newName });
-      const parent = filePath.substring(0, filePath.lastIndexOf("\\"));
-      await get().refreshFiles(parent);
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
-  moveFile: async (source: string, destDir: string) => {
-    try {
-      await invoke("move_file", { source, destDir });
-      const parent = source.substring(0, source.lastIndexOf("\\"));
-      await get().refreshFiles(parent);
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
   importFiles: async (sourcePath: string, destDir: string) => {
-    await invoke("import_file", { sourcePath, destDir });
+    try {
+      await invoke("import_file", { sourcePath, destDir });
+      await get().refreshFiles(destDir);
+    } catch (e) {
+      set({ error: String(e) });
+    }
   },
   // ── LLM Pipeline ──
-  extractText: async (filePath: string) => {
-    set({ pipelineStatus: "extracting", error: null });
-    try {
-      const text: string = await invoke("extract_text", { filePath });
-      set({ extractedText: text, sourceFilePath: filePath });
-    } catch (e) {
-      set({ error: String(e), pipelineStatus: "error" });
-    }
-  },
 
-  startPreAnalysis: async (projectName: string, filePath: string) => {
-    // Step 1: Extract text
-    set({ pipelineStatus: "extracting", error: null });
+  /** Stage 1+2：提取文本 → 分析 → 规划，停在 awaiting_confirmation */
+  runIngestPipeline: async (projectName: string, filePath: string) => {
+    logInfo("Pipeline", `启动: 项目=${projectName} 文件=${filePath}`);
+
+    const tick = get().setPipelineState;
+
+    // ── 提取文本 ──
+    logInfo("Pipeline", "阶段: 提取文本");
+    tick({ status: "extracting", error: null });
+    let text: string;
     try {
-      const text: string = await invoke("extract_text", { filePath });
-      set({ extractedText: text, sourceFilePath: filePath });
+      text = await invoke("extract_text", { filePath });
+      logInfo("Pipeline", `文本提取完成: ${text.length} 字符`);
+      tick({ extractedText: text, sourceFilePath: filePath });
     } catch (e) {
-      set({ error: String(e), pipelineStatus: "error" });
+      logError("Pipeline", `文本提取失败: ${String(e)}`);
+      tick({ status: "error", error: String(e) });
       return;
     }
 
-    // Step 2: Pre-analysis via LLM
-    set({ pipelineStatus: "pre_analyzing" });
+    // ── 读取 wiki/index.md ──
+    let indexContent = "";
     try {
-      const entities = await runPreAnalysis(get().extractedText);
+      const ws = get().workspace;
+      if (ws) {
+        const indexPath = `${ws}\\${projectName}\\wiki\\index.md`;
+        indexContent = await invoke("read_file", { filePath: indexPath });
+        logInfo("Pipeline", `已读取索引: ${indexContent.length} 字符`);
+      }
+    } catch {
+      logInfo("Pipeline", "索引不存在（首次 ingest，正常）");
+    }
+    tick({ indexContent });
 
-      // Step 3: Check existence for each entity
-      for (const entity of entities) {
+    // ── Stage 1: 分析源文档 ──
+    logInfo("Pipeline", "阶段: Stage 1 分析");
+    tick({ status: "analyzing" });
+    let analysisText: string;
+    try {
+      analysisText = await runStage1Analysis(text, indexContent);
+      tick({ analysisText });
+    } catch (e) {
+      logError("Pipeline", `Stage 1 失败: ${String(e)}`);
+      tick({ status: "error", error: String(e) });
+      return;
+    }
+
+    // ── Stage 2: 规划变更 ──
+    logInfo("Pipeline", "阶段: Stage 2 规划");
+    tick({ status: "planning" });
+    try {
+      const sourceFileName = basename(filePath);
+      let plan = await runStage2Planning(analysisText, indexContent, sourceFileName);
+      plan.analysisSummary = extractAnalysisSummary(analysisText);
+
+      // 补全 update 页面的 existing_path，确认不存在的降级为 create
+      const ws = get().workspace;
+      if (!ws) {
+        logError("Pipeline", "工作区未配置");
+        tick({ status: "error", error: "工作区未配置" });
+        return;
+      }
+      const confirmedUpdate: PlannedPage[] = [];
+      for (const page of plan.update) {
         try {
           const existingPath: string | null = await invoke("check_wiki_exists", {
             projectName,
-            wikiType: entity.type,
-            title: entity.title,
+            wikiType: page.type,
+            title: page.title,
           });
           if (existingPath) {
-            entity.action = "update";
-            entity.existing_path = existingPath;
+            page.existing_path = existingPath;
+            confirmedUpdate.push(page);
           } else {
-            entity.action = "create";
+            page.action = "create";
+            page.existing_path = undefined;
+            plan.create.push(page);
           }
         } catch {
-          entity.action = "create";
+          page.action = "create";
+          plan.create.push(page);
         }
       }
+      plan.update = confirmedUpdate;
 
-      set({ preAnalysisEntities: entities, pipelineStatus: "awaiting_confirmation" });
+      logInfo("Pipeline", `Stage 2 完成, 等待确认: create=${plan.create.length} update=${plan.update.length}`);
+      tick({ plan, status: "awaiting_confirmation" });
     } catch (e) {
-      set({ error: String(e), pipelineStatus: "error" });
+      logError("Pipeline", `Stage 2 失败: ${String(e)}`);
+      tick({ status: "error", error: String(e) });
     }
   },
 
-  confirmAndGenerate: async (
-    projectName: string,
-    sourceText: string,
-    entities: PreAnalysisEntity[],
-  ) => {
-    set({ pipelineStatus: "generating", error: null });
-    const errors: string[] = [];
-    let succeeded = 0;
+  /** Stage 3+4+housekeeping */
+  confirmPlan: async (projectName: string, plan: IngestPlan) => {
+    logInfo("Pipeline", `用户确认计划: create=${plan.create.length} update=${plan.update.length}`);
 
-    for (const entity of entities) {
-      try {
-        let existingContent: string | undefined;
-        if (entity.action === "update" && entity.existing_path) {
+    const tick = get().setPipelineState;
+    const state = get().pipelineState;
+
+    const errors: string[] = [];
+
+    /** 执行批量写入，失败时逐页重试（利用 writtenKeys 跳过已写入页面） */
+    async function executeBatchWithRetry(
+      pages: PlannedPage[],
+      progressKey: "updateProgress" | "createProgress",
+      batchFn: (batch: PlannedPage[]) => Promise<BatchWriteResult>,
+      singleFn: (page: PlannedPage) => Promise<BatchWriteResult>,
+      progress: StageProgress,
+      label: string,
+    ): Promise<void> {
+      async function retryEach(list: PlannedPage[]) {
+        for (const page of list) {
+          logInfo("Pipeline", `${label}: 逐页重试 ${page.title}`);
+          tick({ [progressKey]: { ...progress, currentTitle: page.title } });
           try {
-            existingContent = await invoke("read_wiki", {
-              filePath: entity.existing_path,
+            const r = await singleFn(page);
+            if (r.allWritten) {
+              progress.completed++;
+            } else {
+              progress.failed++;
+              progress.errors.push({
+                title: page.title,
+                error: "LLM 未生成有效内容或磁盘写入失败",
+              });
+            }
+          } catch (e2) {
+            progress.failed++;
+            progress.errors.push({ title: page.title, error: String(e2) });
+          }
+          tick({ [progressKey]: { ...progress } });
+        }
+      }
+
+      logInfo("Pipeline", `${label}: 批量写入 ${pages.length} 页`);
+      try {
+        const result = await batchFn(pages);
+        progress.completed = result.writtenKeys.size;
+
+        if (!result.allWritten) {
+          const toRetry = pages.filter(
+            (p) => !result.writtenKeys.has(`${p.type}/${p.title}`),
+          );
+          logInfo("Pipeline", `${label}: 批量完成 ${result.writtenKeys.size}/${pages.length}, 重试 ${toRetry.length} 页`);
+          await retryEach(toRetry);
+        }
+      } catch (e) {
+        logWarn("Pipeline", `${label}: 批量请求整体失败, 全部逐页重试: ${String(e)}`);
+        await retryEach(pages);
+      }
+      logInfo("Pipeline", `${label}: 完成=${progress.completed} 失败=${progress.failed}`);
+      tick({ [progressKey]: { ...progress } });
+    }
+
+    // ── Stage 3: 更新已有页面 ──
+    if (plan.update.length > 0) {
+      logInfo("Pipeline", "阶段: Stage 3 更新已有页面");
+      const progress: StageProgress = {
+        total: plan.update.length,
+        completed: 0,
+        failed: 0,
+        currentTitle: null,
+        errors: [],
+      };
+      tick({ status: "updating", updateProgress: { ...progress } });
+
+      // 先收集所有已有内容
+      const existingContents: Record<string, string> = {};
+      for (const page of plan.update) {
+        const key = `${page.type}/${page.title}`;
+        if (page.existing_path) {
+          try {
+            existingContents[key] = await invoke("read_wiki", {
+              filePath: page.existing_path,
             });
           } catch {
-            // If read fails, treat as create
-            entity.action = "create";
+            existingContents[key] = "";
           }
+        } else {
+          existingContents[key] = "";
         }
+      }
+      logInfo("Pipeline", `Stage 3: 已读取 ${Object.keys(existingContents).length} 个已有页面内容`);
 
-        const wikiContent = await generateWiki(entity, sourceText, existingContent);
+      await executeBatchWithRetry(
+        plan.update,
+        "updateProgress",
+        (batch) =>
+          batchUpdateWikiPages(
+            batch,
+            existingContents,
+            state.analysisText,
+            projectName,
+          ),
+        (page) => {
+          const key = `${page.type}/${page.title}`;
+          return batchUpdateWikiPages(
+            [page],
+            { [key]: existingContents[key] || "" },
+            state.analysisText,
+            projectName,
+          );
+        },
+        progress,
+        "Stage 3",
+      );
 
-        await invoke("write_wiki", {
-          projectName,
-          wikiType: entity.type,
-          title: entity.title,
-          content: wikiContent,
-        });
-
-        succeeded++;
-      } catch (e) {
-        errors.push(`${entity.title}: ${String(e)}`);
+      if (progress.failed > 0) {
+        errors.push(
+          ...progress.errors.map(
+            (e) => `更新失败: ${e.title} — ${e.error}`,
+          ),
+        );
       }
     }
 
-    // Refresh file tree
-    const ws = get().workspace;
-    if (ws) {
-      const projectDir = `${ws}\\${projectName}`;
-      try {
-        await get().refreshFiles(projectDir);
-      } catch { /* refresh is best-effort */ }
+    // ── Stage 4: 新建页面 ──
+    if (plan.create.length > 0) {
+      logInfo("Pipeline", "阶段: Stage 4 新建页面");
+      const progress: StageProgress = {
+        total: plan.create.length,
+        completed: 0,
+        failed: 0,
+        currentTitle: null,
+        errors: [],
+      };
+      tick({ status: "creating", createProgress: { ...progress } });
+
+      await executeBatchWithRetry(
+        plan.create,
+        "createProgress",
+        (batch) =>
+          batchCreateWikiPages(batch, state.analysisText, projectName),
+        (page) =>
+          batchCreateWikiPages([page], state.analysisText, projectName),
+        progress,
+        "Stage 4",
+      );
+
+      if (progress.failed > 0) {
+        errors.push(
+          ...progress.errors.map(
+            (e) => `新建失败: ${e.title} — ${e.error}`,
+          ),
+        );
+      }
     }
 
-    if (errors.length > 0 && succeeded === 0) {
-      set({
-        error: `所有 ${errors.length} 个 Wiki 生成失败:\n${errors.join("\n")}`,
-        pipelineStatus: "error",
-      });
-    } else if (errors.length > 0) {
-      set({
-        error: `${succeeded}/${entities.length} 个成功，${errors.length} 个失败:\n${errors.join("\n")}`,
-        pipelineStatus: "done",
-      });
+    // ── Housekeeping ──
+    logInfo("Pipeline", "阶段: Housekeeping");
+    tick({ status: "housekeeping" });
+
+    const ws = get().workspace;
+
+    // 为新建页面逐条追加 index 条目，summary 从 frontmatter 读取
+    for (const page of plan.create) {
+      try {
+        let summary = page.rationale || "";
+        // 读回已写入的页面，从 frontmatter 取 50-120 字 summary
+        if (ws) {
+          try {
+            const filePath = `${ws}\\${projectName}\\wiki\\${page.type}\\${page.title}.md`;
+            const content: string = await invoke("read_file", { filePath });
+            const fmSummary = extractSummaryFromFrontmatter(content);
+            if (fmSummary) summary = fmSummary;
+          } catch {
+            // 读文件失败，用 rationale 兜底
+          }
+        }
+        await appendWikiIndex(projectName, page.type, page.title, summary);
+      } catch (e) {
+        errors.push(`index 追加失败: ${page.title} — ${String(e)}`);
+      }
+    }
+    try {
+      const sourceFileName = state.sourceFilePath
+        ? basename(state.sourceFilePath)
+        : "未知文件";
+      await writeLogMd(projectName, sourceFileName, plan);
+    } catch (e) {
+      errors.push(`log 写入失败: ${String(e)}`);
+    }
+
+    // ── 刷新文件树 ──
+    if (ws) {
+      try {
+        await get().refreshFiles(`${ws}\\${projectName}`);
+      } catch { /* best-effort */ }
+    }
+
+    // ── 完成 ──
+    if (errors.length > 0) {
+      const allUpdateFailed =
+        plan.update.length > 0 &&
+        get().pipelineState.updateProgress.failed === plan.update.length;
+      const allCreateFailed =
+        plan.create.length > 0 &&
+        get().pipelineState.createProgress.failed === plan.create.length;
+
+      if (allUpdateFailed && allCreateFailed) {
+        logError("Pipeline", `全部失败:\n${errors.join("\n")}`);
+        tick({
+          status: "error",
+          error: `所有操作失败:\n${errors.join("\n")}`,
+        });
+      } else {
+        logWarn("Pipeline", `部分完成:\n${errors.join("\n")}`);
+        tick({
+          status: "done",
+          error: `部分成功:\n${errors.join("\n")}`,
+        });
+      }
     } else {
-      set({ pipelineStatus: "done" });
+      logInfo("Pipeline", "全部完成!");
+      tick({ status: "done" });
     }
   },
 
   resetPipeline: () => {
-    set({
-      pipelineStatus: "idle",
-      extractedText: "",
-      preAnalysisEntities: [],
-      sourceFilePath: null,
-      error: null,
-    });
+    set({ pipelineState: initialPipelineState() });
   },
 }));
