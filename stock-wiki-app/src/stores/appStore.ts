@@ -407,6 +407,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? basename(state.sourceFilePath)
       : "未知文件";
 
+    const allPages = [...plan.create, ...plan.update];
+
     // ── Stage 3: 更新已有页面 ──
     if (plan.update.length > 0) {
       logInfo("Pipeline", "阶段: Stage 3 更新已有页面");
@@ -447,6 +449,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             state.analysisText,
             sourceFileName,
             projectName,
+            state.indexContent,
+            allPages,
           ),
         (page) => {
           const key = `${page.type}/${page.title}`;
@@ -456,6 +460,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             state.analysisText,
             sourceFileName,
             projectName,
+            state.indexContent,
+            allPages,
           );
         },
         progress,
@@ -487,9 +493,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         plan.create,
         "createProgress",
         (batch) =>
-          batchCreateWikiPages(batch, state.analysisText, sourceFileName, projectName),
+          batchCreateWikiPages(batch, state.analysisText, sourceFileName, projectName, state.indexContent, allPages),
         (page) =>
-          batchCreateWikiPages([page], state.analysisText, sourceFileName, projectName),
+          batchCreateWikiPages([page], state.analysisText, sourceFileName, projectName, state.indexContent, allPages),
         progress,
         "Stage 4",
       );

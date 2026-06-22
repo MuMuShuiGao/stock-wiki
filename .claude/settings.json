@@ -60,7 +60,16 @@
       "Bash(dir /s /b \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\\\\src\\\\components\\\\\" 2>nul)",
       "Bash(taskkill //F //IM app.exe)",
       "Bash(taskkill //F //IM node.exe)",
-      "Bash(certutil -hashfile \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\\\\src\\\\components\\\\MarkdownPreview.tsx\" MD5)"
+      "Bash(certutil -hashfile \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\\\\src\\\\components\\\\MarkdownPreview.tsx\" MD5)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
+      "Bash(node -e \"const p = require\\('./node_modules/@tailwindcss/vite/package.json'\\); console.log\\('tailwindcss/vite version:', p.version\\); console.log\\('peerDependencies:', JSON.stringify\\(p.peerDependencies, null, 2\\)\\)\")",
+      "Bash(taskkill /f /im node.exe)",
+      "Bash(cat src-tauri/tauri.conf.json)",
+      "Bash(cat src-tauri/tauri.conf.json5)",
+      "Bash(ls src-tauri/*.json*)",
+      "Bash(node -e \"const {createRequire} = require\\('node:module'\\); const r = createRequire\\(import.meta.url\\); console.log\\(r.resolve\\('vite/bin/vite.js'\\)\\)\")",
+      "Bash(node -e \"import {createRequire} from 'node:module'; const r = createRequire\\(import.meta.url\\); console.log\\(r.resolve\\('vite/bin/vite.js'\\)\\)\")",
+      "Bash(node -e \"import\\('vite/package.json'\\).then\\(m => console.log\\(JSON.stringify\\({bin: m.default.bin, exports: m.default.exports?.['.']}, null, 2\\)\\)\\)\")"
     ],
     "additionalDirectories": [
       "d:\\Code\\stock-wiki\\stock-wiki-app\\src-tauri"
