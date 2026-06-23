@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { FolderOpen, GitGraph } from "lucide-react";
 import { useAppStore } from "../stores/appStore";
+import { PATHS } from "../components/path-list";
 
 export default function ProjectListPage() {
   const navigate = useNavigate();
@@ -8,6 +10,7 @@ export default function ProjectListPage() {
     workspace,
     projects,
     error,
+    lastVisitedProject,
     refreshWorkspace,
     selectWorkspace,
     refreshProjects,
@@ -65,6 +68,41 @@ export default function ProjectListPage() {
           {workspace}
         </p>
       </div>
+
+      {/* 继续上次工作 */}
+      {lastVisitedProject && (
+        <div className="p-4 rounded-lg border border-[var(--color-accent-bg)] bg-[var(--color-accent-bg)]/10">
+          <p className="text-xs text-[var(--color-text-muted)] mb-3">
+            继续上次工作
+          </p>
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-[var(--color-accent)]">
+              {lastVisitedProject}
+            </span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => navigate(PATHS.projectFiles(lastVisitedProject))}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium
+                           bg-[var(--color-accent)] text-white
+                           hover:bg-[var(--color-accent-hover)] transition-colors cursor-pointer"
+              >
+                <FolderOpen size={14} />
+                文件
+              </button>
+              <button
+                onClick={() => navigate(PATHS.projectGraph(lastVisitedProject))}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium
+                           border border-[var(--color-border)]
+                           text-[var(--color-text-secondary)]
+                           hover:bg-[var(--color-bg-tertiary)] transition-colors cursor-pointer"
+              >
+                <GitGraph size={14} />
+                图谱
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create new project */}
       <div className="flex gap-2">

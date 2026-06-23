@@ -55,6 +55,7 @@ export default function ProjectDetailPage() {
     runIngestPipeline,
     confirmPlan,
     resetPipeline,
+    setLastVisitedProject,
   } = useAppStore();
 
   const [newItemName, setNewItemName] = useState("");
@@ -78,6 +79,13 @@ export default function ProjectDetailPage() {
   // Compute paths
   const projectDir = workspace ? `${workspace}\\${decodedName}` : "";
   const rawDir = projectDir ? `${projectDir}\\raw` : "";
+
+  // 记住最后访问的项目，跨路由保持可用
+  useEffect(() => {
+    if (decodedName) {
+      setLastVisitedProject(decodedName);
+    }
+  }, [decodedName, setLastVisitedProject]);
 
   // 初始化：首次拿到 projectDir 时设置 currentDir
   useEffect(() => {

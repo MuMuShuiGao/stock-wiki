@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../stores/appStore";
+import { PATHS } from "../components/path-list";
 import {
   saveLlmConfig,
   detectProvider,
@@ -32,6 +34,8 @@ const THEME_OPTIONS: {
 // ── 组件 ────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
+  const navigate = useNavigate();
+
   // ── Store ──
   const {
     workspace,
@@ -40,6 +44,7 @@ export default function SettingsPage() {
     refreshLlmConfig,
     themePreference,
     setThemePreference,
+    lastVisitedProject,
   } = useAppStore();
 
   // ── 表单状态 ──
@@ -202,6 +207,16 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="flex flex-col items-center gap-5 p-6 pb-20">
           <div className="w-full max-w-lg flex flex-col gap-5">
+            {lastVisitedProject && (
+              <button
+                onClick={() => navigate(PATHS.projectFiles(lastVisitedProject))}
+                className="self-start flex items-center gap-1 text-sm text-[var(--color-text-muted)]
+                           hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+              >
+                <span>←</span>
+                <span>返回 {lastVisitedProject}</span>
+              </button>
+            )}
             <h1 className="text-xl font-bold">设置</h1>
 
             {/* ── 错误横幅 ── */}

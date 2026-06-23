@@ -40,6 +40,10 @@ interface AppState {
   themePreference: "dark" | "light" | "system";
   setThemePreference: (t: "dark" | "light" | "system") => void;
 
+  // ── Last visited project (preserved across route changes) ──
+  lastVisitedProject: string | null;
+  setLastVisitedProject: (name: string | null) => void;
+
   // ── Projects ──
   projects: FileEntry[];
   setProjects: (p: FileEntry[]) => void;
@@ -120,6 +124,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     localStorage.setItem("stock-wiki-theme", t);
     set({ themePreference: t });
   },
+  lastVisitedProject: null,
+  setLastVisitedProject: (name) => set({ lastVisitedProject: name }),
   projects: [],
   setProjects: (p) => set({ projects: p }),
   files: [],
