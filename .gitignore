@@ -1,0 +1,6 @@
+# Vite cache (may appear at root during dev)
+.vite/
+
+# OS
+.DS_Store
+Thumbs.db
