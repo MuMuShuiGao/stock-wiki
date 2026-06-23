@@ -34,9 +34,17 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
     }
   }
 
-  // 用 graphology-layout-forceatlas2 的标准设置
-  const settings = forceAtlas2.inferSettings(graph);
-  const iterations = 200; // 足够 1000 节点收敛
+  // ForceAtlas2 布局：加大间距避免节点挤在一起
+  const settings = {
+    ...forceAtlas2.inferSettings(graph),
+    scalingRatio: 20,     // 默认 ~3，加大扩散空间
+    gravity: 0.3,         // 降低中心引力，让节点自然散开
+    strongGravityMode: true,
+    outboundAttractionDistribution: true,  // hub 节点不被邻居挤扁
+    linLogMode: true,     // 适合有社区结构的图
+    edgeWeightInfluence: 0.8,
+  };
+  const iterations = 300;
 
   // 每 50 轮报告进度
   const positions: Array<{ key: string; x: number; y: number }> = [];
@@ -48,8 +56,8 @@ self.onmessage = (e: MessageEvent<WorkerInput>) => {
 
     // 收集当前坐标
     positions.length = 0;
-    graph.forEachNode((key, attrs) => {
-      positions.push({ key, x: attrs.x, y: attrs.y });
+    graph.forEachNode((key, { x, y }) => {
+      positions.push({ key, x, y });
     });
 
     const output: WorkerOutput = {

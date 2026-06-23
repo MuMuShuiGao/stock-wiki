@@ -9,7 +9,7 @@ export interface WikilinksNode {
   summary: string;
   aliases: string[];
   degree: number;
-  sources_count: number;
+  sources: string[];
   x: number | null;
   y: number | null;
 }

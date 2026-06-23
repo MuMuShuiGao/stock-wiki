@@ -22,7 +22,7 @@ key = `type/title`（如 `股票/沃格光电`），与 wikilink 格式一致。
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "updated": "2026-06-23 14:30:00",
   "nodes": {
     "股票/沃格光电": {
@@ -31,7 +31,7 @@ key = `type/title`（如 `股票/沃格光电`），与 wikilink 格式一致。
       "summary": "国内玻璃基板龙头...",
       "aliases": ["沃格"],
       "degree": 5,
-      "sources_count": 3,
+      "sources": ["source1", "source2", "source3"],
       "x": 120.5,
       "y": -45.3
     }
@@ -50,7 +50,7 @@ key = `type/title`（如 `股票/沃格光电`），与 wikilink 格式一致。
 | 字段 | 说明 |
 |------|------|
 | `degree` | wikilink 度（仅统计显式 wikilink 边） |
-| `sources_count` | frontmatter `sources` 数组长度 |
+| `sources` | frontmatter `sources` 数组（用于 Jaccard 相似度） |
 | `x` / `y` | 布局坐标，初始 `null`，ForceAtlas2 跑完后写入 |
 
 ### 2.3 边来源
@@ -107,8 +107,7 @@ else:
 | 值 | 含义 |
 |---|------|
 | `1.0` | 双向 wikilink（A→B 且 B→A） |
-| `0.8` | 单向 wikilink + 正文中出现（频次 bonus: +0.05 × min(count, 3)） |
-| `0.6` | 仅单向 wikilink（frontmatter related 或正文） |
+| `0.6` | 单向 wikilink |
 
 ### 3.4 Source overlap
 
@@ -155,10 +154,8 @@ S_aa = Σ 1 / log(degree(v))   for each v ∈ common_neighbors(A, B)
    - 解析 frontmatter JSON → `title`, `type`, `summary`, `aliases`, `related`, `sources`
    - 正则匹配正文 `\[\[(.*?)\]\]` → 提取 wikilink 目标
    - 合并 `related` + 正文 wikilink → 去重
-3. 计算 `degree`（wikilink 度数）和 `sources_count`
-4. 写 `wiki/.wikilinks.json`（坐标字段 `null`）
-
-**不做**：四信号计算、布局计算（均在前端）。
+3. 计算 `degree`（wikilink 度数）
+4. 计算四信号边（strong + suggested），写 `wiki/.wikilinks.json`（坐标字段 `null`）
 
 ### 4.2 调用链
 
@@ -191,8 +188,8 @@ ingest pipeline:
 | 编码 | 规则 |
 |------|------|
 | **颜色** | 按实体类型 |
-| **大小** | wikilink 度 + sources_count 归一化 |
-| **亮度/饱和度** | sources_count 独立通道 |
+| **大小** | wikilink 度 + sources 归一化 |
+| **亮度/饱和度** | sources 独立通道 |
 
 ### 边
 
@@ -209,9 +206,8 @@ ingest pipeline:
 
 | Phase | 内容 |
 |-------|------|
-| **1** | Rust `rebuild_wikilinks()` + `.wikilinks.json` schema + 全局 icon bar + Sigma.js 基础渲染 |
-| **2** | 四信号 suggested 边计算 + 虚线叠加 |
-| **3** | 自适应 label / sources 视觉通道 / 搜索飞行动画 / 刷新按钮 / 边缘 case |
+| **1** | Rust `rebuild_wikilinks()`（含四信号边计算）+ `.wikilinks.json` schema + Sigma.js 渲染 + 全局 icon bar |
+| **2** | 自适应 label / 搜索飞行动画 / 刷新按钮 / 边缘 case |
 
 ---
 
@@ -224,4 +220,4 @@ ingest pipeline:
 | 3 | `.wikilinks.json` 全量重建，不增量更新 |
 | 4 | 图谱刷新：工具栏手动触发，不自动检测 |
 | 5 | 空项目无 wiki 页面时显示空状态引导 |
-| 6 | sources 只加权不加边（通过 sources_count 体现在节点视觉上） |
+| 6 | sources 只加权不加边（通过 sources 体现在节点视觉上） |

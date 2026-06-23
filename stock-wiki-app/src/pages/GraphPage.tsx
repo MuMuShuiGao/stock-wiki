@@ -19,6 +19,7 @@ export default function GraphPage() {
   const setError = useAppStore((s) => s.setError);
 
   const [search, setSearch] = useState("");
+  const [focusNodeKey, setFocusNodeKey] = useState<string | null>(null);
   const [activeTypes, setActiveTypes] = useState<Set<WikiType>>(
     () => new Set(WIKI_TYPES),
   );
@@ -84,14 +85,15 @@ export default function GraphPage() {
           const s = search.toLowerCase();
           return (
             node.title.toLowerCase().includes(s) ||
-            node.aliases.some((a) => a.toLowerCase().includes(s))
+            (node.aliases ?? []).some((a) => a.toLowerCase().includes(s))
           );
         })
       : [];
 
   const handleSelectSuggestion = useCallback(
-    (_key: string) => {
-      setSearch(""); // 清空搜索，让 GraphCanvas 处理聚焦
+    (key: string) => {
+      setSearch("");
+      setFocusNodeKey(key);
     },
     [],
   );
@@ -154,6 +156,8 @@ export default function GraphPage() {
         projectName={decodedName}
         search={search}
         activeTypes={activeTypes}
+        focusNodeKey={focusNodeKey}
+        onFocusHandled={() => setFocusNodeKey(null)}
       />
     </div>
   );

@@ -24,7 +24,7 @@ struct WikilinksNode {
     summary: String,      // 50-120 字概述
     aliases: Vec<String>, // 别名列表
     degree: usize,        // wikilink 度（参与的边数）
-    sources_count: usize, // frontmatter sources 数组长度
+    sources: Vec<String>, // frontmatter sources 数组（用于 Jaccard 相似度计算）
     x: Option<f64>,       // 布局坐标 x（null = 待前端 ForceAtlas2 计算）
     y: Option<f64>,       // 布局坐标 y
 }
@@ -34,8 +34,8 @@ struct WikilinksNode {
 struct WikilinksEdge {
     source: String,
     target: String,
-    score: f64,  // Phase 1: direct wikilink 信号值 (0.6 / 0.8 / 1.0)
-    tier: String, // Phase 1: 仅 "strong"
+    score: f64,
+    tier: String, // "strong" | "suggested"
 }
 
 /// .wikilinks.json 顶层结构
@@ -222,6 +222,27 @@ fn extract_csv_text(file_path: &Path) -> Result<String, String> {
 
 const WIKI_TYPES: &[&str] = &["股票", "概念", "模式", "市场环境", "总结"];
 
+/// 类型亲和度矩阵（knowledge-graph-design.md §3.6）
+/// 索引顺序与 WIKI_TYPES 一致：股票, 概念, 模式, 市场环境, 总结
+const TYPE_AFFINITY: [[f64; 5]; 5] = [
+    //  股票   概念   模式   市场环境 总结
+    [   0.3,  0.8,  0.6,  0.5,   0.2 ], // 股票
+    [   0.8,  0.4,  0.5,  0.6,   0.2 ], // 概念
+    [   0.6,  0.5,  0.3,  0.4,   0.2 ], // 模式
+    [   0.5,  0.6,  0.4,  0.3,   0.2 ], // 市场环境
+    [   0.2,  0.2,  0.2,  0.2,   0.1 ], // 总结
+];
+
+/// 查找两个 wiki 类型的亲和度。任一类型不在 WIKI_TYPES 中时返回 0.0。
+fn type_affinity(type_a: &str, type_b: &str) -> f64 {
+    let ia = WIKI_TYPES.iter().position(|&t| t == type_a);
+    let ib = WIKI_TYPES.iter().position(|&t| t == type_b);
+    match (ia, ib) {
+        (Some(a), Some(b)) => TYPE_AFFINITY[a][b],
+        _ => 0.0,
+    }
+}
+
 fn create_wiki_dirs(project_path: &Path) -> Result<(), String> {
     fs::create_dir_all(project_path.join("raw")).map_err(|e| e.to_string())?;
     let wiki_base = project_path.join("wiki");
@@ -261,32 +282,77 @@ fn extract_wikilinks_from_body(body: &str) -> Vec<String> {
     links
 }
 
+/// 计算两个 sources 数组的 Jaccard 相似度：|A∩B| / |A∪B|。
+/// 双方均为空时返回 0.0。
+fn jaccard_similarity(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 0.0;
+    }
+    let set_a: HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
+    let set_b: HashSet<&str> = b.iter().map(|s| s.as_str()).collect();
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
+/// 计算 Adamic-Adar 分数：对两个节点的共同 wikilink 邻居 v，累加 1 / log(degree(v))。
+/// degree 取自 nodes_map 中已回填的 wikilink 度（至少为 1 防止除零）。
+fn adamic_adar(
+    neighbors_a: Option<&HashSet<String>>,
+    neighbors_b: Option<&HashSet<String>>,
+    nodes_map: &HashMap<String, WikilinksNode>,
+) -> f64 {
+    let na = match neighbors_a {
+        Some(n) => n,
+        None => return 0.0,
+    };
+    let nb = match neighbors_b {
+        Some(n) => n,
+        None => return 0.0,
+    };
+
+    let mut sum = 0.0_f64;
+    for common in na.intersection(nb) {
+        if let Some(node) = nodes_map.get(common) {
+            let deg = (node.degree.max(1)) as f64;
+            sum += 1.0 / deg.ln();
+        }
+    }
+    sum
+}
+
 /// 解析 wiki 页面的 `---json` frontmatter 块。
-/// 返回 (related 链接 key 列表, sources, summary, aliases)。
+/// 返回 (related 链接 key 列表, sources, summary, aliases, 正文 body)。
 /// 解析失败时静默返回空值，不中断扫描流程。
-fn parse_frontmatter_fields(content: &str) -> (Vec<String>, Vec<String>, String, Vec<String>) {
+fn parse_frontmatter_fields(content: &str) -> (Vec<String>, Vec<String>, String, Vec<String>, String) {
     let content = content.trim_start();
     let after_open = match content.strip_prefix("---json") {
         Some(s) => s,
-        None => return (vec![], vec![], String::new(), vec![]),
+        None => return (vec![], vec![], String::new(), vec![], String::new()),
     };
     let close_idx = match after_open.find("\n---") {
         Some(i) => i,
-        None => return (vec![], vec![], String::new(), vec![]),
+        None => return (vec![], vec![], String::new(), vec![], String::new()),
     };
     let json_str = after_open[..close_idx].trim();
+    let body = after_open[close_idx + "\n---".len()..]
+        .trim_start_matches('\n')
+        .to_string();
     if json_str.is_empty() {
-        return (vec![], vec![], String::new(), vec![]);
+        return (vec![], vec![], String::new(), vec![], body);
     }
 
     let value: serde_json::Value = match serde_json::from_str(json_str) {
         Ok(v) => v,
-        Err(_) => return (vec![], vec![], String::new(), vec![]),
+        Err(_) => return (vec![], vec![], String::new(), vec![], body),
     };
 
     let mapping = match value {
         serde_json::Value::Object(m) => m,
-        _ => return (vec![], vec![], String::new(), vec![]),
+        _ => return (vec![], vec![], String::new(), vec![], body),
     };
 
     // related: wikilink 数组，可能带 [[...]] 包裹
@@ -333,7 +399,7 @@ fn parse_frontmatter_fields(content: &str) -> (Vec<String>, Vec<String>, String,
         })
         .unwrap_or_default();
 
-    (related, sources, summary, aliases)
+    (related, sources, summary, aliases, body)
 }
 
 // ── Workspace commands ──────────────────────────────────────────
@@ -926,9 +992,10 @@ fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), 
     }
 
     let mut nodes_map: HashMap<String, WikilinksNode> = HashMap::new();
-    let mut edges: Vec<WikilinksEdge> = Vec::new();
-    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
-    let mut degree_counts: HashMap<String, usize> = HashMap::new();
+    // Pass 1 收集的有向链接: (source_key, target_key)
+    let mut directed_links: Vec<(String, String)> = Vec::new();
+
+    // ═══════ Pass 1：解析所有文件，注册节点，收集有向链接 ═══════
 
     for wiki_type in WIKI_TYPES {
         let type_dir = wiki_base.join(wiki_type);
@@ -946,7 +1013,6 @@ fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), 
             }
 
             let file_name = entry.file_name().to_string_lossy().to_string();
-            // 跳过非 .md 文件、index.md、日志文件、自身
             if !file_name.ends_with(".md")
                 || file_name.starts_with("index.")
                 || file_name.starts_with("log-")
@@ -962,64 +1028,34 @@ fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), 
                 Err(_) => continue,
             };
 
-            let (related_links, sources, summary, aliases) =
+            let (related_links, sources, summary, aliases, body) =
                 parse_frontmatter_fields(&content);
-
-            // 提取正文 wikilink（frontmatter 结束标记 `\n---` 之后的部分）
-            let after_open = content
-                .trim_start()
-                .strip_prefix("---json")
-                .unwrap_or("");
-            let body = if let Some(close_idx) = after_open.find("\n---") {
-                after_open[close_idx + "\n---".len()..].to_string()
-            } else {
-                String::new()
-            };
             let body_links = extract_wikilinks_from_body(&body);
 
-            // 注册节点（首次出现时创建）
+            // 注册节点
             nodes_map.entry(key.clone()).or_insert(WikilinksNode {
                 key: key.clone(),
                 node_type: wiki_type.to_string(),
                 title: title.clone(),
                 summary,
                 aliases: aliases.clone(),
-                degree: 0, // 稍后统一填写
-                sources_count: sources.len(),
+                degree: 0,
+                sources: sources.clone(),
                 x: None,
                 y: None,
             });
 
-            // 合并 frontmatter related + 正文 wikilink，建边
-            let all_links: Vec<String> = related_links
-                .into_iter()
-                .chain(body_links.into_iter())
-                .collect();
-
-            for link_str in &all_links {
+            // 收集有向链接（去重每文件内部）
+            let mut file_seen: HashSet<String> = HashSet::new();
+            for link_str in related_links.iter().chain(body_links.iter()) {
                 if let Some((lt, lt_title)) = link_str.split_once('/') {
                     if WIKI_TYPES.contains(&lt) && !lt_title.is_empty() {
                         let target_key = format!("{}/{}", lt, lt_title);
-                        // 排除自环
                         if target_key == key {
                             continue;
                         }
-                        // 规范化边键：无向图中 (A,B) 与 (B,A) 等价，按字典序统一
-                        let edge_tuple = if key <= target_key {
-                            (key.clone(), target_key.clone())
-                        } else {
-                            (target_key.clone(), key.clone())
-                        };
-                        if seen_edges.insert(edge_tuple) {
-                            // Phase 1: 有 wikilink 即 strong，score 默认 0.6（单向）
-                            edges.push(WikilinksEdge {
-                                source: key.clone(),
-                                target: target_key.clone(),
-                                score: 0.6,
-                                tier: "strong".to_string(),
-                            });
-                            *degree_counts.entry(key.clone()).or_default() += 1;
-                            *degree_counts.entry(target_key).or_default() += 1;
+                        if file_seen.insert(target_key.clone()) {
+                            directed_links.push((key.clone(), target_key));
                         }
                     }
                 }
@@ -1027,16 +1063,110 @@ fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), 
         }
     }
 
-    // 回填 degree（每个节点参与的边数）
+    // ═══════ Pass 2：strong 边（双向检测 + 得分） ═══════
+
+    let mut edges: Vec<WikilinksEdge> = Vec::new();
+    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
+    let mut degree_counts: HashMap<String, usize> = HashMap::new();
+
+    // 构建反向索引：A → B 是否存在
+    let mut forward_set: HashSet<(String, String)> = HashSet::new();
+    for (src, tgt) in &directed_links {
+        forward_set.insert((src.clone(), tgt.clone()));
+    }
+
+    for (src, tgt) in &directed_links {
+        let edge_tuple = if src <= tgt {
+            (src.clone(), tgt.clone())
+        } else {
+            (tgt.clone(), src.clone())
+        };
+        if !seen_edges.insert(edge_tuple) {
+            continue;
+        }
+
+        let is_bidi = forward_set.contains(&(tgt.clone(), src.clone()));
+        let score = if is_bidi { 1.0 } else { 0.6 };
+
+        edges.push(WikilinksEdge {
+            source: src.clone(),
+            target: tgt.clone(),
+            score,
+            tier: "strong".to_string(),
+        });
+        *degree_counts.entry(src.clone()).or_default() += 1;
+        *degree_counts.entry(tgt.clone()).or_default() += 1;
+    }
+
+    // 回填 degree（Pass 3 Adamic-Adar 依赖此值）
     for (key, count) in degree_counts {
         if let Some(node) = nodes_map.get_mut(&key) {
             node.degree = count;
         }
     }
 
+    // ═══════ Pass 3：suggested 边（source 重叠 + Adamic-Adar + 类型亲和） ═══════
+
+    // 构建 wikilink 邻居集合（仅 strong 边）
+    let mut wikilink_neighbors: HashMap<String, HashSet<String>> = HashMap::new();
+    for edge in &edges {
+        wikilink_neighbors
+            .entry(edge.source.clone())
+            .or_default()
+            .insert(edge.target.clone());
+        wikilink_neighbors
+            .entry(edge.target.clone())
+            .or_default()
+            .insert(edge.source.clone());
+    }
+
+    let node_keys: Vec<&String> = nodes_map.keys().collect();
+    let n = node_keys.len();
+
+    for i in 0..n {
+        let key_a = node_keys[i];
+        for j in (i + 1)..n {
+            let key_b = node_keys[j];
+
+            // 跳过已有 strong 边的对
+            let edge_key = if key_a <= key_b {
+                (key_a.clone(), key_b.clone())
+            } else {
+                (key_b.clone(), key_a.clone())
+            };
+            if seen_edges.contains(&edge_key) {
+                continue;
+            }
+
+            let node_a = &nodes_map[key_a];
+            let node_b = &nodes_map[key_b];
+
+            let s_source = jaccard_similarity(&node_a.sources, &node_b.sources);
+            let s_aa = adamic_adar(
+                wikilink_neighbors.get(key_a),
+                wikilink_neighbors.get(key_b),
+                &nodes_map,
+            );
+            let s_type = type_affinity(&node_a.node_type, &node_b.node_type);
+
+            let score = 0.20 * s_source + 0.20 * s_aa + 0.10 * s_type;
+
+            if score >= 0.20 {
+                edges.push(WikilinksEdge {
+                    source: key_a.clone(),
+                    target: key_b.clone(),
+                    score,
+                    tier: "suggested".to_string(),
+                });
+            }
+        }
+    }
+
+    // ═══════ 写文件 ═══════
+
     let now = chrono_now();
     let data = WikilinksData {
-        version: 1,
+        version: 2,
         updated: now,
         nodes: nodes_map,
         edges,
@@ -1047,10 +1177,12 @@ fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), 
     fs::write(&json_path, content).map_err(|e| e.to_string())?;
 
     info!(
-        "wikilinks 重建完成 [{}]: {} 节点, {} 边 → {}",
+        "wikilinks 重建完成 [{}]: {} 节点, {} 边 (strong={}, suggested={}) → {}",
         project_name,
         data.nodes.len(),
         data.edges.len(),
+        data.edges.iter().filter(|e| e.tier == "strong").count(),
+        data.edges.iter().filter(|e| e.tier == "suggested").count(),
         json_path.display()
     );
 
