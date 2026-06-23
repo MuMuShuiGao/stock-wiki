@@ -3,18 +3,18 @@ import { useAppStore } from "../stores/appStore";
 
 interface Props {
   projectName: string;
-  projectDir: string;
   rawDir: string;
   files: string[];
   onClose: () => void;
+  onImportComplete?: () => void;
 }
 
 export default function ImportModal({
   projectName,
-  projectDir,
   rawDir,
   files,
   onClose,
+  onImportComplete,
 }: Props) {
   const [selected, setSelected] = useState<Set<number>>(() => {
     // Select all by default
@@ -23,7 +23,7 @@ export default function ImportModal({
   const [importing, setImporting] = useState(false);
   const [results, setResults] = useState<{ ok: number; fail: number; errors: string[] } | null>(null);
 
-  const { importFiles, refreshFiles } = useAppStore();
+  const { importFiles } = useAppStore();
 
   const toggleFile = (index: number) => {
     if (importing) return;
@@ -97,10 +97,8 @@ export default function ImportModal({
       }
     }
 
-    // Refresh file tree
-    try {
-      await refreshFiles(projectDir);
-    } catch { /* best-effort */ }
+    // Notify parent to refresh sidebar
+    onImportComplete?.();
 
     setResults({ ok, fail, errors });
     setImporting(false);

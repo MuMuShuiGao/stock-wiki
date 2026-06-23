@@ -245,6 +245,7 @@ fn type_affinity(type_a: &str, type_b: &str) -> f64 {
 
 fn create_wiki_dirs(project_path: &Path) -> Result<(), String> {
     fs::create_dir_all(project_path.join("raw")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(project_path.join("ingested")).map_err(|e| e.to_string())?;
     let wiki_base = project_path.join("wiki");
     for sub_dir in WIKI_TYPES {
         fs::create_dir_all(wiki_base.join(sub_dir)).map_err(|e| e.to_string())?;
@@ -847,6 +848,59 @@ fn import_file(source_path: String, dest_dir: String) -> Result<FileEntry, Strin
     })
 }
 
+// ── Ingested file tracking ───────────────────────────────────────
+
+#[tauri::command]
+fn check_ingested(app: tauri::AppHandle, project_name: String, file_name: String) -> Result<bool, String> {
+    let ws_path = get_workspace_path(&app)?;
+    let ingested_path = ws_path.join(&project_name).join("ingested").join(&file_name);
+    Ok(ingested_path.exists())
+}
+
+#[tauri::command]
+fn move_to_ingested(app: tauri::AppHandle, project_name: String, source_path: String) -> Result<String, String> {
+    let src = Path::new(&source_path);
+    if !src.exists() {
+        return Err(format!("源文件不存在: {}", source_path));
+    }
+    let name = src
+        .file_name()
+        .ok_or("无效的文件路径")?
+        .to_string_lossy()
+        .to_string();
+
+    let ws_path = get_workspace_path(&app)?;
+    let ingested_dir = ws_path.join(&project_name).join("ingested");
+    fs::create_dir_all(&ingested_dir).map_err(|e| e.to_string())?;
+
+    let dest = ingested_dir.join(&name);
+
+    // 如果 ingested/ 下已有同名文件，使用计数器后缀
+    let stem = src
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let mut final_dest = dest.clone();
+    let mut counter = 1;
+    while final_dest.exists() {
+        let new_name = if ext.is_empty() {
+            format!("{} ({})", stem, counter)
+        } else {
+            format!("{} ({}).{}", stem, counter, ext)
+        };
+        final_dest = ingested_dir.join(&new_name);
+        counter += 1;
+    }
+
+    fs::rename(&src, &final_dest).map_err(|e| format!("移动文件失败: {}", e))?;
+
+    let final_path = final_dest.to_string_lossy().to_string();
+    info!("文件已移动到 ingested: {}", final_path);
+    Ok(final_path)
+}
+
 // ── Append wiki index ────────────────────────────────────────────
 
 #[tauri::command]
@@ -1271,6 +1325,9 @@ pub fn run() {
             ensure_wiki_dirs,
             append_wiki_index,
             rebuild_wikilinks,
+            // Ingested tracking
+            check_ingested,
+            move_to_ingested,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

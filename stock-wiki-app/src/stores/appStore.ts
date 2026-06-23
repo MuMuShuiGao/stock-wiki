@@ -27,6 +27,18 @@ export interface FileEntry {
   is_dir: boolean;
 }
 
+export interface BatchFileStatus {
+  path: string;
+  name: string;
+  status: "pending" | "processing" | "done" | "error";
+  error?: string;
+}
+
+export interface BatchProgress {
+  files: BatchFileStatus[];
+  running: boolean;
+}
+
 interface AppState {
   // ── Workspace ──
   workspace: string | null;
@@ -47,10 +59,6 @@ interface AppState {
   // ── Projects ──
   projects: FileEntry[];
   setProjects: (p: FileEntry[]) => void;
-
-  // ── File tree ──
-  files: FileEntry[];
-  setFiles: (f: FileEntry[]) => void;
 
   // ── Selected file ──
   selectedFile: FileEntry | null;
@@ -78,6 +86,10 @@ interface AppState {
   setGraphData: (data: WikilinksData | null) => void;
   setGraphLoading: (v: boolean) => void;
 
+  // ── Batch Ingest ──
+  batchProgress: BatchProgress | null;
+  setBatchProgress: (p: BatchProgress | null) => void;
+
   // ── Actions: Workspace ──
   refreshWorkspace: () => Promise<void>;
   selectWorkspace: () => Promise<void>;
@@ -91,9 +103,6 @@ interface AppState {
   deleteProject: (name: string) => Promise<void>;
 
   // ── Actions: Files ──
-  refreshFiles: (dirPath: string) => Promise<void>;
-  createFile: (parentDir: string, name: string, content?: string) => Promise<void>;
-  createFolder: (parentDir: string, name: string) => Promise<void>;
   readFile: (filePath: string) => Promise<void>;
   writeFile: (filePath: string, content: string) => Promise<void>;
   deleteFile: (filePath: string) => Promise<void>;
@@ -106,6 +115,9 @@ interface AppState {
   confirmPlan: (projectName: string, plan: IngestPlan) => Promise<void>;
   /** 重置管道 */
   resetPipeline: () => void;
+
+  /** 批量摄入：遍历 raw/ 下多个文件，自动确认计划，完成后统一重建图谱 */
+  runBatchIngestPipeline: (projectName: string, filePaths: string[]) => Promise<void>;
 }
 
 /** 从完整路径提取文件名（兼容 Windows / Unix 分隔符） */
@@ -128,8 +140,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setLastVisitedProject: (name) => set({ lastVisitedProject: name }),
   projects: [],
   setProjects: (p) => set({ projects: p }),
-  files: [],
-  setFiles: (f) => set({ files: f }),
   selectedFile: null,
   setSelectedFile: (f) => set({ selectedFile: f }),
   fileContent: "",
@@ -151,6 +161,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   graphLoading: false,
   setGraphData: (data) => set({ graphData: data }),
   setGraphLoading: (v) => set({ graphLoading: v }),
+
+  // Batch Ingest
+  batchProgress: null,
+  setBatchProgress: (p) => set({ batchProgress: p }),
 
   // ── Workspace ──
   refreshWorkspace: async () => {
@@ -213,33 +227,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   // ── Files ──
-  refreshFiles: async (dirPath: string) => {
-    try {
-      const files: FileEntry[] = await invoke("list_directory", { dirPath });
-      set({ files });
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
-  createFile: async (parentDir: string, name: string, content?: string) => {
-    try {
-      await invoke("create_file", { parentDir, name, content });
-      await get().refreshFiles(parentDir);
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
-  createFolder: async (parentDir: string, name: string) => {
-    try {
-      await invoke("create_folder", { parentDir, name });
-      await get().refreshFiles(parentDir);
-    } catch (e) {
-      set({ error: String(e) });
-    }
-  },
-
   readFile: async (filePath: string) => {
     try {
       const content: string = await invoke("read_file", { filePath });
@@ -260,8 +247,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   deleteFile: async (filePath: string) => {
     try {
       await invoke("delete_file", { filePath });
-      const parent = filePath.substring(0, filePath.lastIndexOf("\\"));
-      await get().refreshFiles(parent || filePath);
     } catch (e) {
       set({ error: String(e) });
     }
@@ -270,7 +255,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   importFiles: async (sourcePath: string, destDir: string) => {
     try {
       await invoke("import_file", { sourcePath, destDir });
-      await get().refreshFiles(destDir);
     } catch (e) {
       set({ error: String(e) });
     }
@@ -278,10 +262,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ── LLM Pipeline ──
 
   /** Stage 1+2：提取文本 → 分析 → 规划，停在 awaiting_confirmation */
-  runIngestPipeline: async (projectName: string, filePath: string) => {
+  runIngestPipeline: async (projectName: string, filePath: string, opts?: { autoConfirm?: boolean }) => {
     logInfo("Pipeline", `启动: 项目=${projectName} 文件=${filePath}`);
 
     const tick = get().setPipelineState;
+
+    // ── 检查是否已摄入 ──
+    const fileName = basename(filePath);
+    try {
+      const alreadyIngested: boolean = await invoke("check_ingested", {
+        projectName,
+        fileName,
+      });
+      if (alreadyIngested) {
+        logWarn("Pipeline", `文件已摄入，跳过: ${fileName}`);
+        tick({
+          status: "error",
+          error: `文件 "${fileName}" 已经生成过 Wiki，不允许重复摄入。`,
+        });
+        return;
+      }
+    } catch (e) {
+      logError("Pipeline", `检查摄入状态失败: ${String(e)}`);
+      tick({ status: "error", error: `检查摄入状态失败: ${String(e)}` });
+      return;
+    }
 
     // ── 提取文本 ──
     logInfo("Pipeline", "阶段: 提取文本");
@@ -362,8 +367,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       plan.update = confirmedUpdate;
 
-      logInfo("Pipeline", `Stage 2 完成, 等待确认: create=${plan.create.length} update=${plan.update.length}`);
-      tick({ plan, status: "awaiting_confirmation" });
+      logInfo("Pipeline", `Stage 2 完成: create=${plan.create.length} update=${plan.update.length}`);
+      if (opts?.autoConfirm) {
+        await get().confirmPlan(projectName, plan, { skipWikilinksRebuild: true });
+      } else {
+        tick({ plan, status: "awaiting_confirmation" });
+      }
     } catch (e) {
       logError("Pipeline", `Stage 2 失败: ${String(e)}`);
       tick({ status: "error", error: String(e) });
@@ -371,7 +380,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   /** Stage 3+4+housekeeping */
-  confirmPlan: async (projectName: string, plan: IngestPlan) => {
+  confirmPlan: async (projectName: string, plan: IngestPlan, opts?: { skipWikilinksRebuild?: boolean }) => {
     logInfo("Pipeline", `用户确认计划: create=${plan.create.length} update=${plan.update.length}`);
 
     const tick = get().setPipelineState;
@@ -572,21 +581,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       errors.push(`log 写入失败: ${String(e)}`);
     }
 
-    // ── 刷新文件树 ──
-    if (ws) {
+    // ── 重建知识图谱索引 ──（批量模式推迟到最后统一重建）
+    if (!opts?.skipWikilinksRebuild) {
+      logInfo("Pipeline", "阶段: 重建知识图谱链接");
       try {
-        await get().refreshFiles(`${ws}\\${projectName}`);
-      } catch { /* best-effort */ }
+        await rebuildWikilinks(projectName);
+        logInfo("Pipeline", "知识图谱链接重建完成");
+      } catch (e) {
+        logWarn("Pipeline", `知识图谱重建失败: ${String(e)}`);
+        // 非致命：图谱重建失败不阻塞 pipeline 完成
+      }
     }
 
-    // ── 重建知识图谱索引 ──
-    logInfo("Pipeline", "阶段: 重建知识图谱链接");
-    try {
-      await rebuildWikilinks(projectName);
-      logInfo("Pipeline", "知识图谱链接重建完成");
-    } catch (e) {
-      logWarn("Pipeline", `知识图谱重建失败: ${String(e)}`);
-      // 非致命：图谱重建失败不阻塞 pipeline 完成
+    // ── 移动源文件到 ingested ──
+    // 仅在完全成功时移动（部分失败不移动）
+    if (errors.length === 0 && state.sourceFilePath) {
+      logInfo("Pipeline", "阶段: 移动源文件到 ingested");
+      try {
+        await invoke("move_to_ingested", {
+          projectName,
+          sourcePath: state.sourceFilePath,
+        });
+        logInfo("Pipeline", `源文件已移动到 ingested: ${basename(state.sourceFilePath)}`);
+      } catch (e) {
+        logWarn("Pipeline", `移动源文件失败（非致命）: ${String(e)}`);
+      }
     }
 
     // ── 完成 ──
@@ -619,5 +638,63 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   resetPipeline: () => {
     set({ pipelineState: initialPipelineState() });
+  },
+
+  runBatchIngestPipeline: async (projectName: string, filePaths: string[]) => {
+    logInfo("Batch", `批量摄入启动: ${filePaths.length} 个文件`);
+
+    const files: BatchFileStatus[] = filePaths.map((p) => ({
+      path: p,
+      name: basename(p),
+      status: "pending" as const,
+    }));
+    get().setBatchProgress({ files, running: true });
+
+    const ws = get().workspace;
+    if (!ws) {
+      set({ batchProgress: { files, running: false }, error: "工作区未配置" });
+      return;
+    }
+
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      files[i] = { ...f, status: "processing" };
+      get().setBatchProgress({ files: [...files], running: true });
+
+      try {
+        await get().runIngestPipeline(projectName, f.path, { autoConfirm: true });
+
+        const finalStatus = get().pipelineState.status;
+        if (finalStatus === "error") {
+          throw new Error(get().pipelineState.error || "摄入失败");
+        }
+
+        files[i] = { ...f, status: "done" };
+        logInfo("Batch", `完成 ${i + 1}/${files.length}: ${f.name}`);
+      } catch (e) {
+        files[i] = {
+          ...f,
+          status: "error",
+          error: e instanceof Error ? e.message : String(e),
+        };
+        logError("Batch", `失败 ${i + 1}/${files.length}: ${f.name} — ${files[i].error}`);
+      }
+
+      get().setBatchProgress({ files: [...files], running: true });
+    }
+
+    // ── 统一重建知识图谱 ──
+    logInfo("Batch", "阶段: 统一重建知识图谱链接");
+    try {
+      await rebuildWikilinks(projectName);
+      logInfo("Batch", "知识图谱链接重建完成");
+    } catch (e) {
+      logWarn("Batch", `知识图谱重建失败: ${String(e)}`);
+    }
+
+    get().setBatchProgress({ files, running: false });
+    logInfo("Batch", `批量摄入完成: 成功=${files.filter((f) => f.status === "done").length} 失败=${files.filter((f) => f.status === "error").length}`);
+
+    get().resetPipeline();
   },
 }));
