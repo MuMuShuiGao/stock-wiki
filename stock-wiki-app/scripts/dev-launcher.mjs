@@ -1,137 +1,159 @@
 /**
  * Tauri beforeDevCommand 启动器
  *
- * 解决 Windows 上 Ctrl+C 后 vite 进程残留的问题：
- * 1. 启动前先精确匹配并杀掉占用目标端口的残留进程，等待端口真正释放
- * 2. 启动 vite，注册 exit/SIGINT 钩子确保退出时整棵进程树被杀死
+ * 1. 查端口占用 → 跳过自身/父进程 → 级联杀残留进程（signal → taskkill → powershell）
+ * 2. 启动 vite + 退出清理
  */
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const PORT = 5173;
 
-// --------------- step 1: 杀掉端口上的残留进程 ---------------
-function killPort(port) {
-  const killed = killPortWindows(port);
-  if (killed > 0) {
-    waitForPortFree(port, 5000);
-  } else {
-    console.log(`[dev-launcher] 端口 ${port} 未发现残留进程`);
-    sleepSync(200);
-  }
+function log(msg) {
+  console.log(msg);
 }
 
-killPort(PORT);
+// ---- helpers ----
 
-/** 从 netstat 输出中提取精确匹配指定端口的 PID 集合 */
+function getParentPid(pid) {
+  try {
+    const out = execSync(`wmic process where ProcessId=${pid} get ParentProcessId`, {
+      encoding: "utf-8", timeout: 5000,
+    });
+    const match = out.match(/^\d+$/m);
+    return match ? match[0] : null;
+  } catch { return null; }
+}
+
 function findPortPids(port) {
-  const out = execSync("netstat -ano", {
-    encoding: "utf-8",
-    windowsHide: true,
-  });
-  const re = new RegExp(`:${port}(?=\\s|$)`);
   const pids = new Set();
-  for (const line of out.split(/\r?\n/)) {
-    if (!re.test(line)) continue;
-    const parts = line.trim().split(/\s+/);
-    const pid = parts[parts.length - 1];
-    if (pid && pid !== "0" && pid !== "4") {
-      pids.add(pid);
+  try {
+    const out = execSync("netstat -ano", { encoding: "utf-8", timeout: 5000 });
+    const re = new RegExp(`:${port}(?=\\s|$)`);
+    for (const line of out.split(/\r?\n/)) {
+      if (!re.test(line)) continue;
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[parts.length - 1];
+      if (pid && pid !== "0" && pid !== "4") pids.add(pid);
     }
-  }
+  } catch {}
   return pids;
 }
 
-/** 杀掉占用指定端口的 Windows 进程，返回杀掉的进程数 */
-function killPortWindows(port) {
-  const pids = findPortPids(port);
-  if (pids.size === 0) return 0;
-
-  console.log(`[dev-launcher] 发现端口 ${port} 占用: PID ${[...pids].join(", ")}`);
-  let killed = 0;
-  for (const pid of pids) {
-    try {
-      execSync(`taskkill /T /F /PID ${pid}`, {
-        encoding: "utf-8",
-        windowsHide: true,
-      });
-      console.log(`[dev-launcher] killed残留进程 PID ${pid} (端口 ${port})`);
-      killed++;
-    } catch {
-      // 进程可能已经不存在了
-    }
-  }
-  return killed;
+function pidAlive(pid) {
+  try {
+    return execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
+      encoding: "utf-8", timeout: 5000,
+    }).includes(pid);
+  } catch { return false; }
 }
 
-/** 简单的同步 sleep（仅用于启动脚本的短延迟） */
-function sleepSync(ms) {
+function sleep(ms) {
   const end = Date.now() + ms;
-  while (Date.now() < end) { /* busy-wait */ }
+  while (Date.now() < end) {}
 }
 
-/** 轮询等待端口释放，超时后打印警告 */
-function waitForPortFree(port, timeoutMs) {
-  const start = Date.now();
-  if (!isPortInUse(port)) {
-    console.log(`[dev-launcher] 端口 ${port} 已释放 (等待 ${Date.now() - start}ms)`);
-    return;
-  }
-  while (Date.now() - start < timeoutMs) {
-    sleepSync(80);
-    if (!isPortInUse(port)) {
-      console.log(`[dev-launcher] 端口 ${port} 已释放 (等待 ${Date.now() - start}ms)`);
-      return;
+// ---- step 1: clean port ----
+
+log(`[dev-launcher] 检查端口 ${PORT}...`);
+
+const skipPids = new Set([String(process.pid)]);
+const ppid = getParentPid(process.pid);
+if (ppid) skipPids.add(ppid);
+
+const pids = findPortPids(PORT);
+
+if (pids.size > 0) {
+  log(`[dev-launcher] 端口 ${PORT} 占用: PID ${[...pids].join(", ")}`);
+
+  for (const pid of pids) {
+    if (skipPids.has(pid)) {
+      log(`[dev-launcher]   ⏭ 跳过 PID ${pid}`);
+      continue;
     }
+
+    // 级联 kill: signal → taskkill → powershell
+    try { process.kill(Number(pid), "SIGTERM"); } catch {}
+    sleep(200);
+
+    if (pidAlive(pid)) {
+      spawnSync("taskkill", ["/F", "/PID", pid], { stdio: "ignore", timeout: 5000 });
+      sleep(100);
+    }
+    if (pidAlive(pid)) {
+      spawnSync("powershell", [
+        "-NoProfile", "-Command",
+        `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
+      ], { stdio: "ignore", timeout: 8000 });
+      sleep(200);
+    }
+
+    log(`[dev-launcher]   ${pidAlive(pid) ? "✗ 无法杀死" : "✓ killed"} PID ${pid}`);
   }
-  console.log(`[dev-launcher] ⚠ 端口 ${port} 在 ${timeoutMs}ms 内未释放，继续启动`);
+
+  const start = Date.now();
+  while (Date.now() - start < 5000) {
+    if (findPortPids(PORT).size === 0) {
+      log(`[dev-launcher] 端口 ${PORT} 已释放 (${Date.now() - start}ms)`);
+      break;
+    }
+    sleep(100);
+  }
+} else {
+  log(`[dev-launcher] 端口 ${PORT} 空闲`);
 }
 
-/** 检查端口是否被占用（返回 true=占用中） */
-function isPortInUse(port) {
-  return findPortPids(port).size > 0;
+if (findPortPids(PORT).size > 0) {
+  log(`[dev-launcher] 端口 ${PORT} 仍被占用，退出`);
+  process.exit(1);
 }
 
-// --------------- step 2: 启动 vite ---------------
-// 直接用已知路径启动 vite，绕过 pnpm 减少进程层级
-// Vite package.json: "bin": { "vite": "bin/vite.js" }
+// ---- step 2: start vite ----
+
 const viteBin = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
+const child = spawn(process.execPath, [viteBin], { stdio: "inherit" });
 
-const child = spawn(process.execPath, [viteBin], {
-  stdio: "inherit",
-  windowsHide: true,
+child.on("error", (err) => {
+  log(`[dev-launcher] vite 启动失败: ${err.message}`);
+  process.exit(1);
 });
 
-console.log(`[dev-launcher] 启动 vite (PID ${child.pid})`);
+log(`[dev-launcher] vite PID ${child.pid}`);
 
-// --------------- step 3: 清理钩子 ---------------
-let cleanedUp = false;
-function cleanup() {
-  if (cleanedUp) return;
-  cleanedUp = true;
-  // 先杀 vite 进程树
+// ---- step 3: cleanup ----
+
+let exiting = false;
+
+/** 可靠地终止 vite 子进程树（Windows 上 taskkill /T /F 最可靠） */
+function killChild() {
   try {
-    execSync(`taskkill /T /F /PID ${child.pid}`, {
-      encoding: "utf-8",
-      windowsHide: true,
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
+      stdio: "ignore", timeout: 5000,
     });
-  } catch { /* 进程可能已经死了 */ }
-  // 再直接清端口（taskkill /T 可能漏掉孤儿子进程）
-  killPort(PORT);
+  } catch {}
 }
 
-// 自身退出时清理
-process.on("exit", () => cleanup());
+function cleanup() {
+  if (exiting) return;
+  exiting = true;
+  log("[dev-launcher] 退出中...");
+  killChild();
+}
 
-// 收到信号时清理（注意 Windows 上 SIGINT 可能不可靠，但 SIGHUP/SIGTERM 可被 tauri 转发）
-["SIGINT", "SIGTERM", "SIGHUP"].forEach((sig) => {
+// Ctrl+C / 终止信号 → 主动杀子进程后退出
+["SIGINT", "SIGTERM", "SIGHUP"].forEach((sig) =>
   process.on(sig, () => {
+    if (exiting) return;
+    // 先注销 child exit 监听，防止竞态
+    child.removeAllListeners("exit");
     cleanup();
     process.exit(0);
-  });
-});
+  })
+);
 
-// vite 自己退出了，我们也退出
+// 子进程自行退出（正常情况）→ 跟随退出
 child.on("exit", (code) => {
-  process.exit(code ?? 0);
+  if (!exiting) {
+    process.exit(code ?? 0);
+  }
 });
