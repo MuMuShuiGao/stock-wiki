@@ -1,34 +1,20 @@
-/**
- * Tauri beforeDevCommand 启动器
- *
- * 1. 查端口占用 → 跳过自身/父进程 → 级联杀残留进程（signal → taskkill → powershell）
- * 2. 启动 vite + 退出清理
- */
 import { spawn, spawnSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const PORT = 5173;
 
-function log(msg) {
-  console.log(msg);
-}
-
-// ---- helpers ----
-
 function getParentPid(pid) {
   try {
-    const out = execSync(`wmic process where ProcessId=${pid} get ParentProcessId`, {
-      encoding: "utf-8", timeout: 5000,
-    });
-    const match = out.match(/^\d+$/m);
-    return match ? match[0] : null;
+    const buf = execSync(`wmic process where ProcessId=${pid} get ParentProcessId /VALUE 2>nul`, { timeout: 5000 });
+    const match = buf.toString("utf-8").match(/ParentProcessId=(\d+)/i);
+    return match ? match[1] : null;
   } catch { return null; }
 }
 
 function findPortPids(port) {
   const pids = new Set();
   try {
-    const out = execSync("netstat -ano", { encoding: "utf-8", timeout: 5000 });
+    const out = execSync("netstat -ano", { timeout: 5000 }).toString("utf-8");
     const re = new RegExp(`:${port}(?=\\s|$)`);
     for (const line of out.split(/\r?\n/)) {
       if (!re.test(line)) continue;
@@ -42,118 +28,112 @@ function findPortPids(port) {
 
 function pidAlive(pid) {
   try {
-    return execSync(`tasklist /FI "PID eq ${pid}" /NH`, {
-      encoding: "utf-8", timeout: 5000,
-    }).includes(pid);
+    return execSync(`tasklist /FI "PID eq ${pid}" /NH`, { timeout: 5000 }).toString("utf-8").includes(pid);
   } catch { return false; }
 }
 
-function sleep(ms) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {}
+function getAncestorPids(startPid) {
+  const ancestors = new Set();
+  let pid = String(startPid);
+  while (true) {
+    const ppid = getParentPid(pid);
+    if (!ppid || ppid === "0" || ancestors.has(ppid)) break;
+    ancestors.add(ppid);
+    pid = ppid;
+  }
+  return ancestors;
 }
 
-// ---- step 1: clean port ----
+function getProcessName(pid) {
+  try {
+    const text = execSync(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, { timeout: 5000 }).toString("utf-8");
+    const match = text.match(/^"([^"]+)"/m);
+    return match ? match[1] : "unknown";
+  } catch { return "unknown"; }
+}
 
-log(`[dev-launcher] 检查端口 ${PORT}...`);
+const sleep = (ms) => { const end = Date.now() + ms; while (Date.now() < end) {} };
+
+console.log(`[dev-launcher] 检查端口 ${PORT}...`);
 
 const skipPids = new Set([String(process.pid)]);
-const ppid = getParentPid(process.pid);
-if (ppid) skipPids.add(ppid);
+for (const apid of getAncestorPids(process.pid)) skipPids.add(apid);
+console.log(`[dev-launcher] 自身 PID ${process.pid}，跳过 ${skipPids.size - 1} 个祖先进程`);
 
-const pids = findPortPids(PORT);
+for (let attempt = 1; attempt <= 3; attempt++) {
+  const pids = findPortPids(PORT);
 
-if (pids.size > 0) {
-  log(`[dev-launcher] 端口 ${PORT} 占用: PID ${[...pids].join(", ")}`);
+  if (pids.size === 0) {
+    if (attempt === 1) console.log(`[dev-launcher] 端口 ${PORT} 空闲`);
+    break;
+  }
+
+  if (attempt === 1) {
+    console.log(`[dev-launcher] 端口 ${PORT} 占用: ${[...pids].map(p => `PID ${p} (${getProcessName(p)})`).join(", ")}`);
+  } else {
+    console.log(`[dev-launcher] 重试清理 (第${attempt}次)...`);
+  }
 
   for (const pid of pids) {
     if (skipPids.has(pid)) {
-      log(`[dev-launcher]   ⏭ 跳过 PID ${pid}`);
+      console.log(`[dev-launcher]   ⏭ 跳过 PID ${pid} (${getProcessName(pid)}) [祖先/自身]`);
       continue;
     }
 
-    // 级联 kill: signal → taskkill → powershell
-    try { process.kill(Number(pid), "SIGTERM"); } catch {}
+    try { spawnSync("taskkill", ["/F", "/PID", pid], { stdio: "ignore", timeout: 5000 }); } catch {}
     sleep(200);
 
     if (pidAlive(pid)) {
-      spawnSync("taskkill", ["/F", "/PID", pid], { stdio: "ignore", timeout: 5000 });
-      sleep(100);
-    }
-    if (pidAlive(pid)) {
-      spawnSync("powershell", [
-        "-NoProfile", "-Command",
-        `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
-      ], { stdio: "ignore", timeout: 8000 });
+      try {
+        spawnSync("powershell", ["-NoProfile", "-Command", `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`], { stdio: "ignore", timeout: 8000 });
+      } catch {}
       sleep(200);
     }
 
-    log(`[dev-launcher]   ${pidAlive(pid) ? "✗ 无法杀死" : "✓ killed"} PID ${pid}`);
+    console.log(`[dev-launcher]   ${pidAlive(pid) ? "✗ 无法杀死" : "✓ killed"} PID ${pid}`);
   }
 
   const start = Date.now();
-  while (Date.now() - start < 5000) {
+  while (Date.now() - start < 10000) {
     if (findPortPids(PORT).size === 0) {
-      log(`[dev-launcher] 端口 ${PORT} 已释放 (${Date.now() - start}ms)`);
+      console.log(`[dev-launcher] 端口 ${PORT} 已释放 (${Date.now() - start}ms)`);
       break;
     }
-    sleep(100);
+    sleep(200);
   }
-} else {
-  log(`[dev-launcher] 端口 ${PORT} 空闲`);
+
+  if (findPortPids(PORT).size === 0) break;
+
+  if (attempt < 3) {
+    console.log("[dev-launcher] 端口仍占用，等待 1 秒后重试...");
+    sleep(1000);
+  }
 }
 
 if (findPortPids(PORT).size > 0) {
-  log(`[dev-launcher] 端口 ${PORT} 仍被占用，退出`);
+  console.log(`[dev-launcher] 端口 ${PORT} 仍被占用（已重试 3 次），退出`);
   process.exit(1);
 }
-
-// ---- step 2: start vite ----
 
 const viteBin = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
 const child = spawn(process.execPath, [viteBin], { stdio: "inherit" });
 
 child.on("error", (err) => {
-  log(`[dev-launcher] vite 启动失败: ${err.message}`);
+  console.log(`[dev-launcher] vite 启动失败: ${err.message}`);
   process.exit(1);
 });
 
-log(`[dev-launcher] vite PID ${child.pid}`);
-
-// ---- step 3: cleanup ----
+console.log(`[dev-launcher] vite PID ${child.pid}`);
 
 let exiting = false;
 
-/** 可靠地终止 vite 子进程树（Windows 上 taskkill /T /F 最可靠） */
-function killChild() {
-  try {
-    spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
-      stdio: "ignore", timeout: 5000,
-    });
-  } catch {}
-}
-
-function cleanup() {
+process.on("SIGINT", () => {
   if (exiting) return;
   exiting = true;
-  log("[dev-launcher] 退出中...");
-  killChild();
-}
+  try { spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)], { stdio: "ignore", timeout: 3000 }); } catch {}
+  process.exit(0);
+});
 
-// Ctrl+C / 终止信号 → 主动杀子进程后退出
-["SIGINT", "SIGTERM", "SIGHUP"].forEach((sig) =>
-  process.on(sig, () => {
-    if (exiting) return;
-    // 先注销 child exit 监听，防止竞态
-    child.removeAllListeners("exit");
-    cleanup();
-    process.exit(0);
-  })
-);
-
-// 子进程自行退出（正常情况）→ 跟随退出
-child.on("exit", (code) => {
-  if (!exiting) {
-    process.exit(code ?? 0);
-  }
+child.on("exit", () => {
+  if (!exiting) process.exit(0);
 });

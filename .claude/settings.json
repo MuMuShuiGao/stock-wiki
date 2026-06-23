@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(git init *)",
       "Bash(git remote *)",
@@ -69,10 +70,19 @@
       "Bash(ls src-tauri/*.json*)",
       "Bash(node -e \"const {createRequire} = require\\('node:module'\\); const r = createRequire\\(import.meta.url\\); console.log\\(r.resolve\\('vite/bin/vite.js'\\)\\)\")",
       "Bash(node -e \"import {createRequire} from 'node:module'; const r = createRequire\\(import.meta.url\\); console.log\\(r.resolve\\('vite/bin/vite.js'\\)\\)\")",
-      "Bash(node -e \"import\\('vite/package.json'\\).then\\(m => console.log\\(JSON.stringify\\({bin: m.default.bin, exports: m.default.exports?.['.']}, null, 2\\)\\)\\)\")"
+      "Bash(node -e \"import\\('vite/package.json'\\).then\\(m => console.log\\(JSON.stringify\\({bin: m.default.bin, exports: m.default.exports?.['.']}, null, 2\\)\\)\\)\")",
+      "Bash(node scripts/dev-launcher.mjs)",
+      "Bash(start /B node -e \"require\\('http'\\).createServer\\(\\(_,r\\)=>{r.end\\('ok'\\)}\\).listen\\(5173\\)\")",
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(cd /d \"d:\\\\Code\\\\stock-wiki\\\\stock-wiki-app\")",
+      "Bash(node -e \"require\\('http'\\).createServer\\(\\(_,r\\)=>{r.end\\('ok'\\)}\\).listen\\(5173\\)\")",
+      "Bash(exit 0)",
+      "Bash(node \"d:/Code/stock-wiki/stock-wiki-app/scripts/dev-launcher.mjs\")",
+      "Bash(rm \"d:/Code/stock-wiki/stock-wiki-app/{r.end\\('ok'\\)}\\).listen\\(5173\\)\")"
     ],
     "additionalDirectories": [
-      "d:\\Code\\stock-wiki\\stock-wiki-app\\src-tauri"
+      "d:\\Code\\stock-wiki\\stock-wiki-app\\src-tauri",
+      "d:\\Code\\stock-wiki\\stock-wiki-app"
     ]
   }
 }
