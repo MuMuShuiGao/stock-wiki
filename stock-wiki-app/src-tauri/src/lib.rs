@@ -1,6 +1,6 @@
 use log::{error, info};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -12,6 +12,39 @@ struct FileEntry {
     name: String,
     path: String,
     is_dir: bool,
+}
+
+/// 知识图谱节点（key = "type/title"，如 "股票/沃格光电"）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WikilinksNode {
+    key: String,
+    #[serde(rename = "type")]
+    node_type: String,    // 实体类型：股票 | 概念 | 模式 | 市场环境 | 总结
+    title: String,        // 实体名称
+    summary: String,      // 50-120 字概述
+    aliases: Vec<String>, // 别名列表
+    degree: usize,        // wikilink 度（参与的边数）
+    sources_count: usize, // frontmatter sources 数组长度
+    x: Option<f64>,       // 布局坐标 x（null = 待前端 ForceAtlas2 计算）
+    y: Option<f64>,       // 布局坐标 y
+}
+
+/// 知识图谱边（无向，source/target 均为 "type/title" key）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WikilinksEdge {
+    source: String,
+    target: String,
+    score: f64,  // Phase 1: direct wikilink 信号值 (0.6 / 0.8 / 1.0)
+    tier: String, // Phase 1: 仅 "strong"
+}
+
+/// .wikilinks.json 顶层结构
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WikilinksData {
+    version: u32,
+    updated: String, // "YYYY-MM-DD HH:mm:ss"
+    nodes: HashMap<String, WikilinksNode>,
+    edges: Vec<WikilinksEdge>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -197,6 +230,110 @@ fn create_wiki_dirs(project_path: &Path) -> Result<(), String> {
     }
     fs::create_dir_all(wiki_base.join("logs")).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── Wikilink 提取工具函数 ──────────────────────────────────────────
+
+/// 从正文中正则提取 `[[type/title]]` 格式的 wikilink。
+/// 校验 type 在 WIKI_TYPES 中、title 非空且不含路径分隔符。
+/// 自动去除 `[[type/title|别名]]` 中的别名部分。返回去重后的 key 列表。
+fn extract_wikilinks_from_body(body: &str) -> Vec<String> {
+    let re = regex::Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
+    let mut links: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for cap in re.captures_iter(body) {
+        let link = cap[1].trim().to_string();
+        // 去除别名: [[type/title|alias]] → type/title
+        let stripped = link.split('|').next().unwrap_or(&link).trim().to_string();
+        if let Some((wiki_type, title)) = stripped.split_once('/') {
+            if WIKI_TYPES.contains(&wiki_type)
+                && !title.is_empty()
+                && !title.contains('/')
+            {
+                let key = format!("{}/{}", wiki_type, title);
+                if seen.insert(key.clone()) {
+                    links.push(key);
+                }
+            }
+        }
+    }
+    links
+}
+
+/// 解析 wiki 页面的 `---json` frontmatter 块。
+/// 返回 (related 链接 key 列表, sources, summary, aliases)。
+/// 解析失败时静默返回空值，不中断扫描流程。
+fn parse_frontmatter_fields(content: &str) -> (Vec<String>, Vec<String>, String, Vec<String>) {
+    let content = content.trim_start();
+    let after_open = match content.strip_prefix("---json") {
+        Some(s) => s,
+        None => return (vec![], vec![], String::new(), vec![]),
+    };
+    let close_idx = match after_open.find("\n---") {
+        Some(i) => i,
+        None => return (vec![], vec![], String::new(), vec![]),
+    };
+    let json_str = after_open[..close_idx].trim();
+    if json_str.is_empty() {
+        return (vec![], vec![], String::new(), vec![]);
+    }
+
+    let value: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return (vec![], vec![], String::new(), vec![]),
+    };
+
+    let mapping = match value {
+        serde_json::Value::Object(m) => m,
+        _ => return (vec![], vec![], String::new(), vec![]),
+    };
+
+    // related: wikilink 数组，可能带 [[...]] 包裹
+    let related: Vec<String> = mapping
+        .get("related")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| {
+                    // 去除 [[...]] 包裹 及 别名
+                    let inner = s.trim_start_matches("[[").trim_end_matches("]]").trim();
+                    inner.split('|').next().unwrap_or(inner).trim().to_string()
+                }))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // sources: 字符串数组
+    let sources: Vec<String> = mapping
+        .get("sources")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // summary: 单行概述
+    let summary = mapping
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // aliases: 字符串数组
+    let aliases: Vec<String> = mapping
+        .get("aliases")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (related, sources, summary, aliases)
 }
 
 // ── Workspace commands ──────────────────────────────────────────
@@ -775,6 +912,186 @@ fn ensure_wiki_dirs(app: tauri::AppHandle, project_name: String) -> Result<(), S
     create_wiki_dirs(&project_base)
 }
 
+// ── 知识图谱 ─────────────────────────────────────────────────────
+
+/// 扫描项目中所有 wiki 页面，提取 wikilink（frontmatter `related` + 正文 `[[type/title]]`），
+/// 全量重建 `wiki/.wikilinks.json`。坐标字段初始为 null，由前端 ForceAtlas2 计算后写回。
+#[tauri::command]
+fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), String> {
+    let ws_path = get_workspace_path(&app)?;
+    let wiki_base = ws_path.join(&project_name).join("wiki");
+
+    if !wiki_base.exists() {
+        return Err(format!("项目 {} 的 wiki 目录不存在", project_name));
+    }
+
+    let mut nodes_map: HashMap<String, WikilinksNode> = HashMap::new();
+    let mut edges: Vec<WikilinksEdge> = Vec::new();
+    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
+    let mut degree_counts: HashMap<String, usize> = HashMap::new();
+
+    for wiki_type in WIKI_TYPES {
+        let type_dir = wiki_base.join(wiki_type);
+        if !type_dir.exists() {
+            continue;
+        }
+
+        let dir = fs::read_dir(&type_dir).map_err(|e| e.to_string())?;
+        for entry in dir {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
+            }
+
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            // 跳过非 .md 文件、index.md、日志文件、自身
+            if !file_name.ends_with(".md")
+                || file_name.starts_with("index.")
+                || file_name.starts_with("log-")
+            {
+                continue;
+            }
+
+            let title = file_name.trim_end_matches(".md").to_string();
+            let key = format!("{}/{}", wiki_type, title);
+
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let (related_links, sources, summary, aliases) =
+                parse_frontmatter_fields(&content);
+
+            // 提取正文 wikilink（frontmatter 结束标记 `\n---` 之后的部分）
+            let after_open = content
+                .trim_start()
+                .strip_prefix("---json")
+                .unwrap_or("");
+            let body = if let Some(close_idx) = after_open.find("\n---") {
+                after_open[close_idx + "\n---".len()..].to_string()
+            } else {
+                String::new()
+            };
+            let body_links = extract_wikilinks_from_body(&body);
+
+            // 注册节点（首次出现时创建）
+            nodes_map.entry(key.clone()).or_insert(WikilinksNode {
+                key: key.clone(),
+                node_type: wiki_type.to_string(),
+                title: title.clone(),
+                summary,
+                aliases: aliases.clone(),
+                degree: 0, // 稍后统一填写
+                sources_count: sources.len(),
+                x: None,
+                y: None,
+            });
+
+            // 合并 frontmatter related + 正文 wikilink，建边
+            let all_links: Vec<String> = related_links
+                .into_iter()
+                .chain(body_links.into_iter())
+                .collect();
+
+            for link_str in &all_links {
+                if let Some((lt, lt_title)) = link_str.split_once('/') {
+                    if WIKI_TYPES.contains(&lt) && !lt_title.is_empty() {
+                        let target_key = format!("{}/{}", lt, lt_title);
+                        // 排除自环
+                        if target_key == key {
+                            continue;
+                        }
+                        // 规范化边键：无向图中 (A,B) 与 (B,A) 等价，按字典序统一
+                        let edge_tuple = if key <= target_key {
+                            (key.clone(), target_key.clone())
+                        } else {
+                            (target_key.clone(), key.clone())
+                        };
+                        if seen_edges.insert(edge_tuple) {
+                            // Phase 1: 有 wikilink 即 strong，score 默认 0.6（单向）
+                            edges.push(WikilinksEdge {
+                                source: key.clone(),
+                                target: target_key.clone(),
+                                score: 0.6,
+                                tier: "strong".to_string(),
+                            });
+                            *degree_counts.entry(key.clone()).or_default() += 1;
+                            *degree_counts.entry(target_key).or_default() += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 回填 degree（每个节点参与的边数）
+    for (key, count) in degree_counts {
+        if let Some(node) = nodes_map.get_mut(&key) {
+            node.degree = count;
+        }
+    }
+
+    let now = chrono_now();
+    let data = WikilinksData {
+        version: 1,
+        updated: now,
+        nodes: nodes_map,
+        edges,
+    };
+
+    let json_path = wiki_base.join(".wikilinks.json");
+    let content = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    fs::write(&json_path, content).map_err(|e| e.to_string())?;
+
+    info!(
+        "wikilinks 重建完成 [{}]: {} 节点, {} 边 → {}",
+        project_name,
+        data.nodes.len(),
+        data.edges.len(),
+        json_path.display()
+    );
+
+    Ok(())
+}
+
+/// 生成 "YYYY-MM-DD HH:mm:ss" 格式的时间戳（不引入 chrono 依赖）。
+fn chrono_now() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let days = secs / 86400;
+    let time = secs % 86400;
+    let hours = time / 3600;
+    let minutes = (time % 3600) / 60;
+    let seconds = time % 60;
+
+    let (y, m, d) = days_to_date(days as i64);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        y, m, d, hours, minutes, seconds
+    )
+}
+
+/// Unix 纪元天数 → (年, 月, 日)。1970–2100 范围内正确。
+fn days_to_date(mut days: i64) -> (i64, u32, u32) {
+    days += 719163; // 纪元偏移：1970-01-01 → 0000-03-01
+    let era = if days >= 0 { days } else { days - 146096 } / 146097;
+    let doe = days - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 // ── App entry point ─────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -821,6 +1138,7 @@ pub fn run() {
             write_wiki,
             ensure_wiki_dirs,
             append_wiki_index,
+            rebuild_wikilinks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

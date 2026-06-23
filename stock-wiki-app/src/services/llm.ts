@@ -6,6 +6,9 @@ import { logInfo, logError, logWarn } from "./logger";
 /** Wiki 页面类型 */
 export type WikiType = "股票" | "概念" | "模式" | "市场环境" | "总结";
 
+/** WikiType 对应的运行时数组（遍历/校验用） */
+export const WIKI_TYPES: WikiType[] = ["股票", "概念", "模式", "市场环境", "总结"];
+
 /** 支持的 LLM 提供商 */
 export type LlmProvider = "deepseek" | "openai" | "anthropic" | "custom";
 

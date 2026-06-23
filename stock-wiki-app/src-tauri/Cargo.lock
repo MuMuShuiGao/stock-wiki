@@ -92,6 +92,7 @@ dependencies = [
  "csv",
  "log",
  "pdf-extract",
+ "regex",
  "serde",
  "serde_json",
  "tauri",

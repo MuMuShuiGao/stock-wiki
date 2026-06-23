@@ -1,4 +1,4 @@
-import { useParams } from "react-router-dom";
+import { useParams, Routes, Route } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,6 +7,7 @@ import { useAppStore } from "../stores/appStore";
 import AnalysisModal from "../components/AnalysisModal";
 import ImportModal from "../components/ImportModal";
 import MarkdownPreview from "../components/MarkdownPreview";
+import GraphPage from "./GraphPage";
 
 /** Shared textarea for editing markdown / plain text (shows raw source with # etc.) */
 function FallbackTextarea({
@@ -263,237 +264,250 @@ export default function ProjectDetailPage() {
   const showAnalysisModal = pipelineState.plan != null;
 
   return (
-    <div className="flex h-full relative">
-      {/* Drag-and-drop overlay */}
-      {isDragOver && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-[var(--color-accent)]/15 backdrop-blur-sm border-2 border-dashed border-[var(--color-accent)] rounded-lg">
-          <div className="text-center pointer-events-none">
-            <p className="text-5xl mb-3">📥</p>
-            <p className="text-xl font-bold text-[var(--color-accent)]">
-              释放文件以导入
-            </p>
-            <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-              文件将被复制到 <span className="font-medium">{decodedName}/raw/</span>
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Sidebar */}
-      <aside
-        className="w-64 flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)]
-                        flex flex-col"
-      >
-        {/* Project header */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)]">
-          {dirStack.length > 0 && (
-            <button
-              onClick={handleBack}
-              title="返回上级目录"
-              className="text-lg leading-none px-1 py-0.5 rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer shrink-0"
-            >
-              ←
-            </button>
-          )}
-          <span className="font-semibold text-sm truncate">
-            📁 {currentDir === projectDir ? decodedName : currentDir.replace(projectDir + "\\", "")}
-          </span>
-        </div>
-
-        {/* Pipeline status indicator */}
-        {(pipelineState.status === "extracting" ||
-          pipelineState.status === "analyzing" ||
-          pipelineState.status === "planning") && (
-          <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-accent)]/10">
-            <p className="text-xs text-[var(--color-accent)]">
-              {pipelineState.status === "extracting"
-                ? "📄 提取文件文本..."
-                : pipelineState.status === "analyzing"
-                  ? "🔍 LLM 分析源文档..."
-                  : "📋 LLM 规划变更..."}
-            </p>
-          </div>
-        )}
-
-        {/* File tree */}
-        <ContextMenu.Root>
-          <ContextMenu.Trigger className="flex-1 overflow-y-auto p-2">
-            {files.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-muted)] p-2">
-                Empty project. Create a file or folder to start.
-              </p>
-            ) : (
-              renderEntries(files, 0)
-            )}
-          </ContextMenu.Trigger>
-
-          <ContextMenu.Portal>
-            <ContextMenu.Content
-              className="min-w-[180px] bg-[var(--color-bg)] rounded-lg border border-[var(--color-border)]
-                         shadow-xl p-1 z-50"
-            >
-              {contextFile && !contextFile.is_dir && (
-                <ContextMenu.Item
-                  onClick={() => handleAnalyzeFile(contextFile)}
-                  className="flex items-center gap-2 px-3 py-2 text-sm rounded cursor-pointer
-                             hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)]
-                             outline-none"
-                >
-                  🤖 分析生成 Wiki
-                </ContextMenu.Item>
-              )}
-              <ContextMenu.Item
-                onClick={() => {
-                  setShowNewFileInput(true);
-                  setShowNewFolderInput(false);
-                  setNewItemName("");
-                  setContextFile(null);
-                }}
-                className="flex items-center gap-2 px-3 py-2 text-sm rounded cursor-pointer
-                           hover:bg-[var(--color-bg-tertiary)] outline-none"
-              >
-                + 新建文件
-              </ContextMenu.Item>
-              <ContextMenu.Item
-                onClick={() => {
-                  setShowNewFolderInput(true);
-                  setShowNewFileInput(false);
-                  setNewItemName("");
-                  setContextFile(null);
-                }}
-                className="flex items-center gap-2 px-3 py-2 text-sm rounded cursor-pointer
-                           hover:bg-[var(--color-bg-tertiary)] outline-none"
-              >
-                + 新建文件夹
-              </ContextMenu.Item>
-            </ContextMenu.Content>
-          </ContextMenu.Portal>
-        </ContextMenu.Root>
-
-        {/* New item inputs */}
-        {(showNewFileInput || showNewFolderInput) && (
-          <div className="border-t border-[var(--color-border)] p-2 flex gap-1">
-            <input
-              type="text"
-              value={newItemName}
-              onChange={(e) => setNewItemName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  showNewFileInput ? handleCreateFile() : handleCreateFolder();
-                }
-                if (e.key === "Escape") {
-                  setShowNewFileInput(false);
-                  setShowNewFolderInput(false);
-                  setNewItemName("");
-                }
-              }}
-              placeholder={showNewFileInput ? "file.md" : "folder name"}
-              autoFocus
-              className="flex-1 px-2 py-1 text-xs rounded border border-[var(--color-border)]
-                         bg-[var(--color-bg)] text-[var(--color-text)] outline-none"
-            />
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="border-t border-[var(--color-border)] p-2 flex gap-1">
-          <button
-            onClick={() => {
-              setShowNewFileInput(true);
-              setShowNewFolderInput(false);
-              setNewItemName("");
-            }}
-            className="flex-1 px-2 py-1.5 text-xs rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer"
-          >
-            + File
-          </button>
-          <button
-            onClick={() => {
-              setShowNewFolderInput(true);
-              setShowNewFileInput(false);
-              setNewItemName("");
-            }}
-            className="flex-1 px-2 py-1.5 text-xs rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer"
-          >
-            + Folder
-          </button>
-        </div>
-      </aside>
-
-      {/* Main content area */}
-      <main className="flex-1 flex flex-col min-w-0">
-        {selectedFile && !selectedFile.is_dir ? (
-          <>
-            {/* Toolbar */}
-            <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--color-border)]">
-              <span className="text-sm font-medium truncate">
-                {selectedFile.name}
-              </span>
-              <div className="flex gap-1 items-center">
-                {isEditing && (
-                  <button
-                    onClick={handleSave}
-                    className="px-3 py-1 text-xs rounded bg-[var(--color-success)] text-white
-                               hover:opacity-90 cursor-pointer"
-                  >
-                    Save
-                  </button>
-                )}
-                {isMarkdown && (
-                  <button
-                    onClick={() => setIsEditing(!isEditing)}
-                    className={`px-3 py-1 text-xs rounded cursor-pointer
-                      ${isEditing
-                        ? "bg-[var(--color-accent)] text-white"
-                        : "bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-border)]"
-                      }`}
-                  >
-                    {isEditing ? "Done" : "Edit"}
-                  </button>
-                )}
-                <button
-                  onClick={handleDelete}
-                  className="px-2 py-1 text-xs rounded text-[var(--color-text-muted)]
-                             hover:text-[var(--color-danger)] cursor-pointer"
-                >
-                  🗑
-                </button>
-              </div>
-            </div>
-
-            {/* Content */}
-            <div className="flex-1 flex overflow-hidden">
-              {isEditing ? (
-                <div className="flex-1 bg-[var(--color-editor-bg)]">
-                  <FallbackTextarea
-                    value={fileContent}
-                    onChange={setFileContent}
-                    placeholder={isMarkdown ? "# Markdown 源码..." : "Start writing..."}
-                  />
-                </div>
-              ) : (
-                <div className="flex-1 overflow-y-auto p-4">
-                  <MarkdownPreview content={fileContent} />
+    <>
+      <Routes>
+        {/* 文件视图（默认）：侧边栏 + 编辑器 */}
+        <Route
+          path="/"
+          element={
+            <div className="flex h-full relative">
+              {/* Drag-and-drop overlay */}
+              {isDragOver && (
+                <div className="absolute inset-0 z-40 flex items-center justify-center bg-[var(--color-accent)]/15 backdrop-blur-sm border-2 border-dashed border-[var(--color-accent)] rounded-lg">
+                  <div className="text-center pointer-events-none">
+                    <p className="text-5xl mb-3">📥</p>
+                    <p className="text-xl font-bold text-[var(--color-accent)]">
+                      释放文件以导入
+                    </p>
+                    <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+                      文件将被复制到 <span className="font-medium">{decodedName}/raw/</span>
+                    </p>
+                  </div>
                 </div>
               )}
-            </div>
-          </>
-        ) : selectedFile?.is_dir ? (
-          <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
-            <div className="text-center">
-              <p className="text-3xl mb-2">📁</p>
-              <p className="text-sm">{selectedFile.name}</p>
-              <p className="text-xs mt-1">双击进入文件夹 · 单击展开子目录</p>
-            </div>
-          </div>
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
-            <p>Select a file to view or edit</p>
-          </div>
-        )}
-      </main>
 
-      {/* Import modal */}
+              {/* Sidebar */}
+              <aside
+                className="w-64 flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)]
+                                flex flex-col"
+              >
+                {/* Project header */}
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)]">
+                  {dirStack.length > 0 && (
+                    <button
+                      onClick={handleBack}
+                      title="返回上级目录"
+                      className="text-lg leading-none px-1 py-0.5 rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer shrink-0"
+                    >
+                      ←
+                    </button>
+                  )}
+                  <span className="font-semibold text-sm truncate">
+                    📁 {currentDir === projectDir ? decodedName : currentDir.replace(projectDir + "\\", "")}
+                  </span>
+                </div>
+
+                {/* Pipeline status indicator */}
+                {(pipelineState.status === "extracting" ||
+                  pipelineState.status === "analyzing" ||
+                  pipelineState.status === "planning") && (
+                  <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-accent)]/10">
+                    <p className="text-xs text-[var(--color-accent)]">
+                      {pipelineState.status === "extracting"
+                        ? "📄 提取文件文本..."
+                        : pipelineState.status === "analyzing"
+                          ? "🔍 LLM 分析源文档..."
+                          : "📋 LLM 规划变更..."}
+                    </p>
+                  </div>
+                )}
+
+                {/* File tree */}
+                <ContextMenu.Root>
+                  <ContextMenu.Trigger className="flex-1 overflow-y-auto p-2">
+                    {files.length === 0 ? (
+                      <p className="text-xs text-[var(--color-text-muted)] p-2">
+                        Empty project. Create a file or folder to start.
+                      </p>
+                    ) : (
+                      renderEntries(files, 0)
+                    )}
+                  </ContextMenu.Trigger>
+
+                  <ContextMenu.Portal>
+                    <ContextMenu.Content
+                      className="min-w-[180px] bg-[var(--color-bg)] rounded-lg border border-[var(--color-border)]
+                                 shadow-xl p-1 z-50"
+                    >
+                      {contextFile && !contextFile.is_dir && (
+                        <ContextMenu.Item
+                          onClick={() => handleAnalyzeFile(contextFile)}
+                          className="flex items-center gap-2 px-3 py-2 text-sm rounded cursor-pointer
+                                     hover:bg-[var(--color-accent)]/10 hover:text-[var(--color-accent)]
+                                     outline-none"
+                        >
+                          🤖 分析生成 Wiki
+                        </ContextMenu.Item>
+                      )}
+                      <ContextMenu.Item
+                        onClick={() => {
+                          setShowNewFileInput(true);
+                          setShowNewFolderInput(false);
+                          setNewItemName("");
+                          setContextFile(null);
+                        }}
+                        className="flex items-center gap-2 px-3 py-2 text-sm rounded cursor-pointer
+                                   hover:bg-[var(--color-bg-tertiary)] outline-none"
+                      >
+                        + 新建文件
+                      </ContextMenu.Item>
+                      <ContextMenu.Item
+                        onClick={() => {
+                          setShowNewFolderInput(true);
+                          setShowNewFileInput(false);
+                          setNewItemName("");
+                          setContextFile(null);
+                        }}
+                        className="flex items-center gap-2 px-3 py-2 text-sm rounded cursor-pointer
+                                   hover:bg-[var(--color-bg-tertiary)] outline-none"
+                      >
+                        + 新建文件夹
+                      </ContextMenu.Item>
+                    </ContextMenu.Content>
+                  </ContextMenu.Portal>
+                </ContextMenu.Root>
+
+                {/* New item inputs */}
+                {(showNewFileInput || showNewFolderInput) && (
+                  <div className="border-t border-[var(--color-border)] p-2 flex gap-1">
+                    <input
+                      type="text"
+                      value={newItemName}
+                      onChange={(e) => setNewItemName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          showNewFileInput ? handleCreateFile() : handleCreateFolder();
+                        }
+                        if (e.key === "Escape") {
+                          setShowNewFileInput(false);
+                          setShowNewFolderInput(false);
+                          setNewItemName("");
+                        }
+                      }}
+                      placeholder={showNewFileInput ? "file.md" : "folder name"}
+                      autoFocus
+                      className="flex-1 px-2 py-1 text-xs rounded border border-[var(--color-border)]
+                                 bg-[var(--color-bg)] text-[var(--color-text)] outline-none"
+                    />
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="border-t border-[var(--color-border)] p-2 flex gap-1">
+                  <button
+                    onClick={() => {
+                      setShowNewFileInput(true);
+                      setShowNewFolderInput(false);
+                      setNewItemName("");
+                    }}
+                    className="flex-1 px-2 py-1.5 text-xs rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer"
+                  >
+                    + File
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowNewFolderInput(true);
+                      setShowNewFileInput(false);
+                      setNewItemName("");
+                    }}
+                    className="flex-1 px-2 py-1.5 text-xs rounded hover:bg-[var(--color-bg-tertiary)] cursor-pointer"
+                  >
+                    + Folder
+                  </button>
+                </div>
+              </aside>
+
+              {/* Main content area */}
+              <main className="flex-1 flex flex-col min-w-0">
+                {selectedFile && !selectedFile.is_dir ? (
+                  <>
+                    {/* Toolbar */}
+                    <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--color-border)]">
+                      <span className="text-sm font-medium truncate">
+                        {selectedFile.name}
+                      </span>
+                      <div className="flex gap-1 items-center">
+                        {isEditing && (
+                          <button
+                            onClick={handleSave}
+                            className="px-3 py-1 text-xs rounded bg-[var(--color-success)] text-white
+                                       hover:opacity-90 cursor-pointer"
+                          >
+                            Save
+                          </button>
+                        )}
+                        {isMarkdown && (
+                          <button
+                            onClick={() => setIsEditing(!isEditing)}
+                            className={`px-3 py-1 text-xs rounded cursor-pointer
+                              ${isEditing
+                                ? "bg-[var(--color-accent)] text-white"
+                                : "bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-border)]"
+                              }`}
+                          >
+                            {isEditing ? "Done" : "Edit"}
+                          </button>
+                        )}
+                        <button
+                          onClick={handleDelete}
+                          className="px-2 py-1 text-xs rounded text-[var(--color-text-muted)]
+                                     hover:text-[var(--color-danger)] cursor-pointer"
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex-1 flex overflow-hidden">
+                      {isEditing ? (
+                        <div className="flex-1 bg-[var(--color-editor-bg)]">
+                          <FallbackTextarea
+                            value={fileContent}
+                            onChange={setFileContent}
+                            placeholder={isMarkdown ? "# Markdown 源码..." : "Start writing..."}
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex-1 overflow-y-auto p-4">
+                          <MarkdownPreview content={fileContent} />
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : selectedFile?.is_dir ? (
+                  <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
+                    <div className="text-center">
+                      <p className="text-3xl mb-2">📁</p>
+                      <p className="text-sm">{selectedFile.name}</p>
+                      <p className="text-xs mt-1">双击进入文件夹 · 单击展开子目录</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
+                    <p>Select a file to view or edit</p>
+                  </div>
+                )}
+              </main>
+            </div>
+          }
+        />
+
+        {/* 图谱视图（全屏，无侧边栏） */}
+        <Route path="/graph" element={<GraphPage />} />
+      </Routes>
+
+      {/* Import modal（两个视图共享） */}
       {showImportModal && (
         <ImportModal
           projectName={decodedName}
@@ -507,7 +521,7 @@ export default function ProjectDetailPage() {
         />
       )}
 
-      {/* Analysis modal */}
+      {/* Analysis modal（两个视图共享） */}
       {showAnalysisModal && pipelineState.plan && (
         <AnalysisModal
           plan={pipelineState.plan}
@@ -517,7 +531,7 @@ export default function ProjectDetailPage() {
         />
       )}
 
-      {/* Error toast */}
+      {/* Error toast（两个视图共享） */}
       {error && (
         <div
           className="fixed bottom-4 right-4 px-4 py-2 rounded-lg bg-red-50 dark:bg-red-900/20
@@ -532,6 +546,6 @@ export default function ProjectDetailPage() {
           </button>
         </div>
       )}
-    </div>
+    </>
   );
 }

@@ -19,6 +19,7 @@ import {
   type StageProgress,
   type PipelineState,
 } from "../services/ingest";
+import { rebuildWikilinks, type WikilinksData } from "../services/wikilinks";
 
 export interface FileEntry {
   name: string;
@@ -66,6 +67,12 @@ interface AppState {
   // ── LLM Pipeline ──
   pipelineState: PipelineState;
   setPipelineState: (patch: Partial<PipelineState>) => void;
+
+  // ── Knowledge Graph ──
+  graphData: WikilinksData | null;
+  graphLoading: boolean;
+  setGraphData: (data: WikilinksData | null) => void;
+  setGraphLoading: (v: boolean) => void;
 
   // ── Actions: Workspace ──
   refreshWorkspace: () => Promise<void>;
@@ -132,6 +139,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => ({
       pipelineState: { ...prev.pipelineState, ...patch },
     })),
+
+  // Knowledge Graph
+  graphData: null,
+  graphLoading: false,
+  setGraphData: (data) => set({ graphData: data }),
+  setGraphLoading: (v) => set({ graphLoading: v }),
 
   // ── Workspace ──
   refreshWorkspace: async () => {
@@ -558,6 +571,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       try {
         await get().refreshFiles(`${ws}\\${projectName}`);
       } catch { /* best-effort */ }
+    }
+
+    // ── 重建知识图谱索引 ──
+    logInfo("Pipeline", "阶段: 重建知识图谱链接");
+    try {
+      await rebuildWikilinks(projectName);
+      logInfo("Pipeline", "知识图谱链接重建完成");
+    } catch (e) {
+      logWarn("Pipeline", `知识图谱重建失败: ${String(e)}`);
+      // 非致命：图谱重建失败不阻塞 pipeline 完成
     }
 
     // ── 完成 ──

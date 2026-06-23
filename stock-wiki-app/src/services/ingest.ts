@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { llmChat, extractJsonFromText, type WikiType } from "./llm";
+import { llmChat, extractJsonFromText, type WikiType, WIKI_TYPES } from "./llm";
 import { logInfo, logWarn, logError } from "./logger";
 
 // ── 类型定义 ──────────────────────────────────────────────────────
@@ -508,15 +508,13 @@ function validatePlanOutput(raw: unknown): LlmPlanOutput {
     throw new Error("计划结果缺少 update 数组");
   }
 
-  const validTypes: WikiType[] = ["股票", "概念", "模式", "市场环境", "总结"];
-
   function validatePage(item: unknown, action: string, index: number): PlannedPage {
     if (typeof item !== "object" || item === null) {
       throw new Error(`${action} #${index + 1} 不是有效对象`);
     }
     const e = item as Record<string, unknown>;
 
-    if (typeof e.type !== "string" || !validTypes.includes(e.type as WikiType)) {
+    if (typeof e.type !== "string" || !(WIKI_TYPES as readonly string[]).includes(e.type)) {
       throw new Error(
         `${action} #${index + 1} 的 type 无效: "${String(e.type)}"`,
       );
