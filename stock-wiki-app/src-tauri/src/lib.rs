@@ -1,3 +1,6 @@
+mod chat;
+mod search;
+
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -1243,8 +1246,55 @@ fn rebuild_wikilinks(app: tauri::AppHandle, project_name: String) -> Result<(), 
     Ok(())
 }
 
+// ── Wiki 问答检索 ──────────────────────────────────────────────────
+
+#[tauri::command]
+fn search_wiki(app: tauri::AppHandle, project_name: String, query: String) -> Result<Vec<search::SearchResult>, String> {
+    let ws_path = get_workspace_path(&app)?;
+    let project_path = ws_path.join(&project_name);
+    search::search_wiki_in_project(&project_path, &query)
+}
+
+// ── 对话持久化 ─────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_conversations(app: tauri::AppHandle, project_name: String) -> Result<Vec<chat::ConversationMeta>, String> {
+    let ws_path = get_workspace_path(&app)?;
+    chat::list_conversations(&ws_path, &project_name)
+}
+
+#[tauri::command]
+fn create_conversation(app: tauri::AppHandle, project_name: String, title: String) -> Result<chat::Conversation, String> {
+    let ws_path = get_workspace_path(&app)?;
+    chat::create_conversation(&ws_path, &project_name, &title)
+}
+
+#[tauri::command]
+fn get_conversation(app: tauri::AppHandle, project_name: String, conv_id: String) -> Result<chat::Conversation, String> {
+    let ws_path = get_workspace_path(&app)?;
+    chat::get_conversation(&ws_path, &project_name, &conv_id)
+}
+
+#[tauri::command]
+fn save_conversation(
+    app: tauri::AppHandle,
+    project_name: String,
+    conv_id: String,
+    messages: Vec<chat::ChatMessage>,
+    new_title: Option<String>,
+) -> Result<(), String> {
+    let ws_path = get_workspace_path(&app)?;
+    chat::save_conversation(&ws_path, &project_name, &conv_id, &messages, new_title.as_deref())
+}
+
+#[tauri::command]
+fn delete_conversation(app: tauri::AppHandle, project_name: String, conv_id: String) -> Result<(), String> {
+    let ws_path = get_workspace_path(&app)?;
+    chat::delete_conversation(&ws_path, &project_name, &conv_id)
+}
+
 /// 生成 "YYYY-MM-DD HH:mm:ss" 格式的时间戳（不引入 chrono 依赖）。
-fn chrono_now() -> String {
+pub fn chrono_now() -> String {
     use std::time::SystemTime;
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1328,6 +1378,14 @@ pub fn run() {
             // Ingested tracking
             check_ingested,
             move_to_ingested,
+            // Wiki Q&A search
+            search_wiki,
+            // Chat conversation CRUD
+            list_conversations,
+            create_conversation,
+            get_conversation,
+            save_conversation,
+            delete_conversation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

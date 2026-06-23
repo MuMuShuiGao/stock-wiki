@@ -8,7 +8,9 @@ import { WIKI_TYPES } from "../services/llm";
 import AnalysisModal from "../components/AnalysisModal";
 import ImportModal from "../components/ImportModal";
 import MarkdownPreview from "../components/MarkdownPreview";
+import ChatPanel from "../components/ChatPanel";
 import GraphPage from "./GraphPage";
+import { useChatStore } from "../stores/chatStore";
 
 /** Shared textarea for editing markdown / plain text (shows raw source with # etc.) */
 function FallbackTextarea({
@@ -57,6 +59,8 @@ export default function ProjectDetailPage() {
     runBatchIngestPipeline,
   } = useAppStore();
 
+  const setProject = useChatStore((s) => s.setProject);
+
   // ── Context menu target ──
   const [contextFile, setContextFile] = useState<FileEntry | null>(null);
 
@@ -81,6 +85,10 @@ export default function ProjectDetailPage() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [droppedFiles, setDroppedFiles] = useState<string[]>([]);
   const [showImportModal, setShowImportModal] = useState(false);
+
+  // Main area tab
+  const [mainTab, setMainTab] = useState<"read" | "chat">("read");
+  const sidebarVisible = mainTab === "read";
 
   // Compute paths
   const projectDir = workspace ? `${workspace}\\${decodedName}` : "";
@@ -152,11 +160,12 @@ export default function ProjectDetailPage() {
     });
   }
 
-  // Init + ensure wiki dirs
+  // Init + ensure wiki dirs + load chat project
   useEffect(() => {
     if (projectDir) {
       loadSidebarData();
       invoke("ensure_wiki_dirs", { projectName: decodedName }).catch(() => {});
+      setProject(decodedName);
     }
   }, [projectDir]);
 
@@ -598,16 +607,27 @@ export default function ProjectDetailPage() {
                 </div>
               )}
 
-              {/* Sidebar */}
+              {/* Sidebar — auto-collapses in chat mode */}
               <aside
-                className="w-64 flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)]
-                                flex flex-col"
+                className={`flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-sidebar)]
+                           flex flex-col transition-all duration-200 overflow-hidden
+                           ${sidebarVisible ? "w-64" : "w-0 border-r-0"}`}
               >
                 {/* Simplified header — project name only */}
                 <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)]">
                   <span className="font-semibold text-sm truncate">
                     📁 {decodedName}
                   </span>
+                  {/* Quick switch to chat from sidebar header */}
+                  <button
+                    onClick={() => setMainTab("chat")}
+                    className="ml-auto text-xs px-2 py-0.5 rounded
+                               text-[var(--color-text-muted)] hover:text-[var(--color-accent)]
+                               hover:bg-[var(--color-accent)]/10 cursor-pointer shrink-0"
+                    title="切换到问答"
+                  >
+                    💬
+                  </button>
                 </div>
 
                 {/* Pipeline status indicator */}
@@ -656,69 +676,107 @@ export default function ProjectDetailPage() {
 
                 {/* ── Wiki Section ── */}
                 {renderWikiSection()}
+
               </aside>
 
               {/* Main content area */}
               <main className="flex-1 flex flex-col min-w-0">
-                {selectedFile ? (
-                  <>
-                    {/* Toolbar */}
-                    <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--color-border)]">
-                      <span className="text-sm font-medium truncate">
+                {/* Toolbar with tabs */}
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)]">
+                  <div className="flex items-center gap-0.5">
+                    {/* Sidebar toggle when collapsed */}
+                    {!sidebarVisible && (
+                      <button
+                        onClick={() => setMainTab("read")}
+                        className="px-2 py-1 text-xs rounded cursor-pointer
+                                   text-[var(--color-text-muted)] hover:text-[var(--color-accent)]
+                                   hover:bg-[var(--color-accent)]/10 mr-1"
+                        title="展开侧边栏 (切换到阅读模式)"
+                      >
+                        ☰
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setMainTab("read")}
+                      className={`px-3 py-1 text-xs rounded cursor-pointer font-medium transition-colors ${
+                        mainTab === "read"
+                          ? "bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
+                      }`}
+                    >
+                      📖 阅读
+                    </button>
+                    <button
+                      onClick={() => setMainTab("chat")}
+                      className={`px-3 py-1 text-xs rounded cursor-pointer font-medium transition-colors ${
+                        mainTab === "chat"
+                          ? "bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]"
+                      }`}
+                    >
+                      💬 问答
+                    </button>
+                  </div>
+                  {/* File actions (only on read tab) */}
+                  {mainTab === "read" && selectedFile && (
+                    <div className="flex gap-1 items-center">
+                      <span className="text-xs text-[var(--color-text-muted)] truncate max-w-[200px] mr-2">
                         {selectedFile.name}
                       </span>
-                      <div className="flex gap-1 items-center">
-                        {isEditing && (
-                          <button
-                            onClick={handleSave}
-                            className="px-3 py-1 text-xs rounded bg-[var(--color-success)] text-white
-                                       hover:opacity-90 cursor-pointer"
-                          >
-                            Save
-                          </button>
-                        )}
-                        {isMarkdown && (
-                          <button
-                            onClick={() => setIsEditing(!isEditing)}
-                            className={`px-3 py-1 text-xs rounded cursor-pointer
-                              ${isEditing
-                                ? "bg-[var(--color-accent)] text-white"
-                                : "bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-border)]"
-                              }`}
-                          >
-                            {isEditing ? "Done" : "Edit"}
-                          </button>
-                        )}
+                      {isEditing && (
                         <button
-                          onClick={handleDelete}
-                          className="px-2 py-1 text-xs rounded text-[var(--color-text-muted)]
-                                     hover:text-[var(--color-danger)] cursor-pointer"
+                          onClick={handleSave}
+                          className="px-3 py-1 text-xs rounded bg-[var(--color-success)] text-white
+                                     hover:opacity-90 cursor-pointer"
                         >
-                          🗑
+                          Save
                         </button>
-                      </div>
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 flex overflow-hidden">
-                      {isEditing ? (
-                        <div className="flex-1 bg-[var(--color-editor-bg)]">
-                          <FallbackTextarea
-                            value={fileContent}
-                            onChange={setFileContent}
-                            placeholder={isMarkdown ? "# Markdown 源码..." : "Start writing..."}
-                          />
-                        </div>
-                      ) : (
-                        <div className="flex-1 overflow-y-auto p-4">
-                          <MarkdownPreview content={fileContent} />
-                        </div>
                       )}
+                      {isMarkdown && (
+                        <button
+                          onClick={() => setIsEditing(!isEditing)}
+                          className={`px-3 py-1 text-xs rounded cursor-pointer
+                            ${isEditing
+                              ? "bg-[var(--color-accent)] text-white"
+                              : "bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-border)]"
+                            }`}
+                        >
+                          {isEditing ? "Done" : "Edit"}
+                        </button>
+                      )}
+                      <button
+                        onClick={handleDelete}
+                        className="px-2 py-1 text-xs rounded text-[var(--color-text-muted)]
+                                   hover:text-[var(--color-danger)] cursor-pointer"
+                      >
+                        🗑
+                      </button>
                     </div>
-                  </>
+                  )}
+                </div>
+
+                {/* Content */}
+                {mainTab === "chat" ? (
+                  <ChatPanel variant="main" />
+                ) : selectedFile ? (
+                  <div className="flex-1 flex overflow-hidden">
+                    {isEditing ? (
+                      <div className="flex-1 bg-[var(--color-editor-bg)]">
+                        <FallbackTextarea
+                          value={fileContent}
+                          onChange={setFileContent}
+                          placeholder={isMarkdown ? "# Markdown 源码..." : "Start writing..."}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex-1 overflow-y-auto p-4">
+                        <MarkdownPreview content={fileContent} />
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="flex-1 flex items-center justify-center text-[var(--color-text-muted)]">
-                    <p>Select a file to view or edit</p>
+                    <p>从左侧选择文件阅读，或切换到「问答」Tab 搜索 Wiki 知识库</p>
                   </div>
                 )}
               </main>
